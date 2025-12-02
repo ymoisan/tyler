@@ -272,6 +272,20 @@ pub struct Cli {
     /// Push attributes for every BuildingPart (in bag3d_buildings_mode only)
     #[arg(long)]
     pub bag3d_attributes_per_part: bool,
+    /// Convert CityJSON features to GeoParquet format instead of generating 3D Tiles.
+    /// Outputs a single GeoParquet file with 2D footprints and attributes optimized for analytical queries.
+    #[arg(long = "to-geoparquet")]
+    pub to_geoparquet: bool,
+    /// Output path for GeoParquet file (only used with --to-geoparquet).
+    /// If not specified, defaults to buildings.parquet in the --output directory.
+    /// If specified, can be a full path or relative path.
+    #[arg(long = "geoparquet-output")]
+    pub geoparquet_output: Option<PathBuf>,
+    /// Compression algorithm for GeoParquet file (only used with --to-geoparquet).
+    /// Options: zstd (default), uncompressed, snappy, lz4
+    /// ZSTD offers excellent balance of compression ratio and speed for geospatial data.
+    #[arg(long = "geoparquet-compression")]
+    pub geoparquet_compression: Option<crate::geoparquet_writer::Compression>,
 }
 
 fn existing_canonical_path(s: &str) -> Result<PathBuf, String> {

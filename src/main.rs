@@ -17,6 +17,7 @@ mod gltf_writer;
 mod parser;
 mod proj;
 mod spatial_structs;
+mod geoparquet_writer;
 
 use core::time::Duration;
 use std::env;
@@ -27,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::formats::cesium3dtiles::{Tile, TileId};
+use crate::geoparquet_writer::{convert_to_geoparquet, GeoParquetConfig};
 use clap::Parser;
 use log::{debug, log_enabled, warn, Level};
 use rayon::prelude::*;
@@ -175,6 +177,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = crate::cli::Cli::parse();
     debug!("{:?}", &cli);
     debug!("tyler version: {}", clap::crate_version!());
+    
+    // Handle GeoParquet conversion mode
+    if cli.to_geoparquet {
+        return handle_geoparquet_conversion(&cli);
+    }
     
     // Validate flag combinations before creating output directory
     if cli.native_glb_from_fcb && cli.metadata.is_some() {
@@ -1081,5 +1088,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tileset.to_file(&tileset_path)?;
     }
 
+    Ok(())
+}
+
+/// Handle GeoParquet conversion mode
+fn handle_geoparquet_conversion(cli: &crate::cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use std::path::Path;
+    
+    debug!("GeoParquet conversion mode");
+    
+    // Validate required arguments
+    let metadata_path = cli.metadata.as_ref()
+        .ok_or("--metadata is required for GeoParquet conversion")?;
+    let features_path = Path::new(&cli.features);
+    
+    if !features_path.exists() {
+        return Err(format!("Features path does not exist: {:?}", features_path).into());
+    }
+    
+    // Determine output path
+    let output_path = if let Some(ref geoparquet_output) = cli.geoparquet_output {
+        geoparquet_output.clone()
+    } else {
+        cli.output.join("buildings.parquet")
+    };
+    
+    // Create output directory if needed
+    if let Some(parent) = output_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    
+    // Create config
+    let config = GeoParquetConfig {
+        include_attributes: None, // Use sensible defaults
+        exclude_attributes: None,
+        output_path,
+        compression: cli.geoparquet_compression, // Use CLI flag or default to ZSTD
+    };
+    
+    // Convert to GeoParquet
+    convert_to_geoparquet(
+        features_path,
+        Path::new(metadata_path),
+        config,
+        cli.object_type.as_deref(), // Pass object_type filter
+    )?;
+    
+    debug!("GeoParquet conversion completed successfully");
     Ok(())
 }

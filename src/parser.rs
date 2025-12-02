@@ -360,6 +360,9 @@ impl World {
             // Parse feature JSON
             match from_str::<CityJSONFeatureVertices>(&feature_json) {
                 Ok(cf) => {
+                    // Validate Building-BuildingPart relationships (no path for FCB features)
+                    cf.validate_building_relationships_impl(None);
+                    
                     // Get feature ID from cityobjects (first key)
                     let feature_id = cf.cityobjects.keys().next()
                         .map(|s| s.to_string())
@@ -532,8 +535,12 @@ impl World {
                         }
                     };
                     
-                    let cf: CityJSONFeatureVertices = match from_str(&feature_json) {
-                        Ok(cf) => cf,
+                    let cf: CityJSONFeatureVertices = match from_str::<CityJSONFeatureVertices>(&feature_json) {
+                        Ok(cf) => {
+                            // Validate Building-BuildingPart relationships (no path for FCB features)
+                            cf.validate_building_relationships_impl(None);
+                            cf
+                        }
                         Err(e) => {
                             warn!("Failed to parse feature JSON: {}", e);
                             continue;
@@ -1067,7 +1074,7 @@ pub struct CityJSONMetadata {
     pub metadata: Metadata,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transform {
     pub scale: [f64; 3],
     pub translate: [f64; 3],
@@ -1205,7 +1212,75 @@ impl CityJSONFeatureVertices {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let cf_str = read_to_string(path.as_ref())?;
         let cf: CityJSONFeatureVertices = from_str(&cf_str)?;
+        cf.validate_building_relationships(path.as_ref());
         Ok(cf)
+    }
+    
+    /// Validate Building-BuildingPart relationships and warn about orphaned BuildingPart objects
+    fn validate_building_relationships(&self, feature_path: &Path) {
+        self.validate_building_relationships_impl(Some(feature_path));
+    }
+    
+    /// Internal validation that can be called with or without a path (for FCB features)
+    fn validate_building_relationships_impl(&self, feature_path: Option<&Path>) {
+        let mut building_ids: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        let mut building_part_ids: Vec<&String> = Vec::new();
+        
+        // Collect all Building and BuildingPart IDs
+        for (id, co) in self.cityobjects.iter() {
+            match co.cotype {
+                CityObjectType::Building => {
+                    building_ids.insert(id);
+                }
+                CityObjectType::BuildingPart => {
+                    building_part_ids.push(id);
+                }
+                _ => {}
+            }
+        }
+        
+        // Check for orphaned BuildingPart objects (no Building parent in same feature)
+        for building_part_id in &building_part_ids {
+            let co = &self.cityobjects[*building_part_id];
+            let has_building_parent = co.parents.as_ref()
+                .map(|parents| {
+                    parents.iter().any(|parent_id| {
+                        self.cityobjects.get(parent_id)
+                            .map(|parent_co| matches!(parent_co.cotype, CityObjectType::Building))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            
+            // Also check if there's any Building in the same feature (even without explicit parent link)
+            let has_building_in_feature = !building_ids.is_empty();
+            
+            if !has_building_parent && !has_building_in_feature {
+                if let Some(path) = feature_path {
+                    warn!(
+                        "Orphaned BuildingPart object '{}' found in feature {:?} - no Building parent in same feature. \
+                        This may indicate a data quality issue. BuildingPart objects should be children of Building objects.",
+                        building_part_id,
+                        path
+                    );
+                } else {
+                    warn!(
+                        "Orphaned BuildingPart object '{}' found in feature - no Building parent in same feature. \
+                        This may indicate a data quality issue. BuildingPart objects should be children of Building objects.",
+                        building_part_id
+                    );
+                }
+            } else if !has_building_parent && has_building_in_feature {
+                // BuildingPart exists in same feature but no explicit parent link
+                if let Some(path) = feature_path {
+                    debug!(
+                        "BuildingPart '{}' in feature {:?} has Building objects in same feature but no explicit parent link",
+                        building_part_id,
+                        path
+                    );
+                }
+            }
+        }
     }
 
     /// Return the number of vertices of the feature.
@@ -1277,18 +1352,38 @@ impl CityJSONFeatureVertices {
 
     /// Compute the 3D bounding box of only the provided CityObject types in the feature.
     /// Returns quantized coordinates.
+    /// 
+    /// Note: Building and BuildingPart are always linked (BuildingParts are children of Buildings).
+    /// If Building is requested, BuildingPart is also included (and vice versa) to ensure
+    /// all building geometry is included in 3DTiles output.
     pub fn bbox_of_types(&self, cityobject_types: Option<&Vec<CityObjectType>>) -> Option<BboxQc> {
         let [mut x_min, mut y_min, mut z_min] = self.vertices[0];
         let [mut x_max, mut y_max, mut z_max] = self.vertices[0];
         let mut found_co_geometry = false;
+        
+        // Check if Building or BuildingPart is requested
+        let has_building = cityobject_types.map_or(true, |types| {
+            types.iter().any(|t| matches!(t, CityObjectType::Building))
+        });
+        let has_building_part = cityobject_types.map_or(true, |types| {
+            types.iter().any(|t| matches!(t, CityObjectType::BuildingPart))
+        });
+        let building_related = has_building || has_building_part;
+        
         for (_, co) in self.cityobjects.iter() {
             // If the object_type argument was not passed, that means that we need all
             // CityObject types. If it was passed, then we filter with its values.
-            // Doing this condition-tree would be much simpler if Option.is_some_and()
-            // was stable feature already.
+            // Special handling: Building and BuildingPart are always linked, so if either
+            // is requested, both are included.
             let mut do_compute = cityobject_types.is_none();
             if let Some(cotypes) = cityobject_types {
                 do_compute = cotypes.contains(&co.cotype);
+                // If Building or BuildingPart is requested, include both types
+                if building_related {
+                    do_compute = do_compute || 
+                        (co.cotype == CityObjectType::Building) || 
+                        (co.cotype == CityObjectType::BuildingPart);
+                }
             }
             if do_compute {
                 if let Some(ref geom) = co.geometry {
@@ -1490,6 +1585,13 @@ pub struct CityObject {
     #[serde(rename = "type")]
     pub cotype: CityObjectType,
     pub geometry: Option<Vec<Geometry>>,
+    /// IDs of child CityObjects (e.g., BuildingPart children of Building)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)] // Tracked for future use and data structure completeness
+    pub children: Option<Vec<String>>,
+    /// IDs of parent CityObjects (e.g., Building parent of BuildingPart)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parents: Option<Vec<String>>,
 }
 
 #[cfg(test)]
