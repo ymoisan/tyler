@@ -211,23 +211,47 @@ pub fn convert_to_geoparquet(
         })
         .collect();
     
-    // Collect successful results
-    // For debugging: fail on first error to see what's wrong
+    // Collect successful results and track statistics
     let mut rows: Vec<BuildingRow> = Vec::new();
+    let mut skipped_no_building = 0;
+    let mut failed_footprint = 0;
+    let mut failed_parse = 0;
+    let mut failed_other = 0;
+    
     for (idx, result) in results.into_iter().enumerate() {
         match result {
             Ok(Some(row)) => rows.push(row),
             Ok(None) => {
-                // Skipped - no matching city objects
+                // Skipped - no matching city objects (no Building object found)
+                skipped_no_building += 1;
+                debug!("Skipped feature file {:?}: no Building object found", feature_files[idx]);
             }
             Err(e) => {
-                // Fail immediately to see what's wrong
-                return Err(anyhow::anyhow!("Failed to process feature file {:?}: {}", feature_files[idx], e));
+                // Log error but continue processing
+                let error_msg = e.to_string();
+                if error_msg.contains("Failed to extract footprint") {
+                    failed_footprint += 1;
+                    warn!("Failed to extract footprint from feature file {:?}: {}", feature_files[idx], e);
+                } else if error_msg.contains("Failed to parse") {
+                    failed_parse += 1;
+                    warn!("Failed to parse feature file {:?}: {}", feature_files[idx], e);
+                } else {
+                    failed_other += 1;
+                    warn!("Failed to process feature file {:?}: {}", feature_files[idx], e);
+                }
             }
         }
     }
     
-    debug!("Finished processing all {} feature files, extracted {} building features", total_files, rows.len());
+    debug!("Finished processing all {} feature files:", total_files);
+    debug!("  - Successfully extracted: {} building features", rows.len());
+    debug!("  - Skipped (no Building object): {}", skipped_no_building);
+    debug!("  - Failed (footprint extraction): {}", failed_footprint);
+    debug!("  - Failed (parsing): {}", failed_parse);
+    debug!("  - Failed (other): {}", failed_other);
+    debug!("  - Total missing: {} (expected {} features)", 
+           skipped_no_building + failed_footprint + failed_parse + failed_other,
+           total_files);
     
     debug!("Processed {} building features", rows.len());
     
@@ -243,7 +267,7 @@ fn find_jsonl_files(dir: &Path) -> Result<Vec<PathBuf>> {
     
     let mut files = Vec::new();
     for entry in WalkDir::new(dir) {
-        let entry = entry?;
+        let entry = entry.context("Failed to read directory entry")?;
         if entry.file_type().is_file() {
             if let Some(ext) = entry.path().extension() {
                 if ext == "jsonl" {
@@ -337,7 +361,6 @@ fn extract_building_row(
 ) -> Result<BuildingRow> {
     // Try to extract actual footprint from building geometry (GroundSurface)
     // This gives us the oriented footprint aligned with the building, not just a bounding box
-    // For debugging: fail on first error to see what's wrong
     let (geometry, bbox) = match extract_footprint_from_geometry(co, feature, transform) {
         Ok(footprint) => {
             // Use the actual footprint from geometry
@@ -345,9 +368,13 @@ fn extract_building_row(
             (footprint.0, footprint.1)
         }
         Err(e) => {
-            // Fail immediately to see what's wrong
-            return Err(anyhow::anyhow!("Failed to extract footprint from geometry for building {}: {}", 
-                                     co.cotype, e));
+            // Log detailed error information
+            let error_details = format!("Failed to extract footprint from geometry for building {} (feature_id: {}): {}", 
+                                       co.cotype, 
+                                       feature.id,
+                                       e);
+            warn!("{}", error_details);
+            return Err(anyhow::anyhow!(error_details));
         }
     };
     
@@ -412,7 +439,7 @@ fn extract_building_row(
 }
 
 /// Filter attributes based on sensible defaults and configuration
-pub(crate) fn filter_attributes(
+pub fn filter_attributes(
     attributes: &HashMap<String, Value>,
     config: &GeoParquetConfig,
 ) -> HashMap<String, Value> {
@@ -458,11 +485,8 @@ fn extract_footprint_from_geometry(
     transform: &Transform,
 ) -> Result<(geo_types::Polygon<f64>, [f64; 6])> {
     // Check if geometry exists at all
-    if co.geometry.is_none() {
-        return Err(anyhow::anyhow!("Building has no geometry field"));
-    }
-    
-    let geoms = co.geometry.as_ref().unwrap();
+    let geoms = co.geometry.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Building has no geometry field"))?;
     debug!("Building has {} geometry entries", geoms.len());
     
     // Find geometry with highest LOD that has GroundSurface
@@ -589,8 +613,10 @@ fn extract_footprint_from_geometry(
                 
                 // Close the ring if not already closed
                 if exterior_points.len() >= 3 {
-                    if exterior_points.first() != exterior_points.last() {
-                        exterior_points.push(*exterior_points.first().unwrap());
+                    if let Some(&first_point) = exterior_points.first() {
+                        if exterior_points.first() != exterior_points.last() {
+                            exterior_points.push(first_point);
+                        }
                     }
                     
                     // Create polygon
@@ -834,29 +860,41 @@ fn write_geoparquet(
     let mut bbox_minzs = Vec::with_capacity(capacity);
     let mut bbox_maxzs = Vec::with_capacity(capacity);
     
-    let array_build_interval = if capacity > 10000 { 1000 } else if capacity > 1000 { 100 } else { 50 };
+    // Filter out invalid rows before building arrays to avoid length mismatches
+    let valid_rows: Vec<_> = rows.iter()
+        .filter(|row| {
+            let exterior = row.geometry.exterior();
+            let exterior_len = exterior.0.len();
+            if exterior_len < 4 {
+                warn!("Polygon {} has invalid exterior ring length: {} (expected at least 4 points). Skipping row.", 
+                      row.feature_id, exterior_len);
+                return false;
+            }
+            
+            let has_invalid_coords = exterior.0.iter().any(|p| !p.x.is_finite() || !p.y.is_finite());
+            if has_invalid_coords {
+                warn!("Polygon {} has invalid coordinates (NaN or infinite). Skipping row.", row.feature_id);
+                return false;
+            }
+            
+            true
+        })
+        .collect();
+    
+    if valid_rows.is_empty() {
+        return Err(anyhow::anyhow!("No valid rows to write after filtering invalid geometries"));
+    }
+    
+    let valid_capacity = valid_rows.len();
+    debug!("Filtered {} invalid rows, {} valid rows remaining", rows.len() - valid_capacity, valid_capacity);
+    
+    let array_build_interval = if valid_capacity > 10000 { 1000 } else if valid_capacity > 1000 { 100 } else { 50 };
     debug!("Building arrays (progress every {} rows)...", array_build_interval);
     
-    for (idx, row) in rows.iter().enumerate() {
+    for (idx, row) in valid_rows.iter().enumerate() {
         if idx > 0 && idx % array_build_interval == 0 {
             debug!("Array building progress: {}/{} rows ({}%)", 
-                   idx, capacity, (idx * 100) / capacity);
-        }
-        
-        // Verify geometry is valid before processing
-        let exterior = row.geometry.exterior();
-        let exterior_len = exterior.0.len();
-        if exterior_len < 4 {
-            warn!("Polygon {} has invalid exterior ring length: {} (expected at least 4 points). Skipping row.", 
-                  row.feature_id, exterior_len);
-            continue; // Skip entire row if geometry is invalid
-        }
-        
-        // Verify polygon has valid coordinates (not NaN or infinite)
-        let has_invalid_coords = exterior.0.iter().any(|p| !p.x.is_finite() || !p.y.is_finite());
-        if has_invalid_coords {
-            warn!("Polygon {} has invalid coordinates (NaN or infinite). Skipping row.", row.feature_id);
-            continue; // Skip entire row if coordinates are invalid
+                   idx, valid_capacity, (idx * 100) / valid_capacity);
         }
         
         // All arrays must have the same length, so we add data for all fields
@@ -865,6 +903,7 @@ fn write_geoparquet(
         cityobject_types.push(Some(row.cityobject_type.clone()));
         
         // Push geometry to GeoArrow builder (encoder API requires GeoArrow input)
+        let exterior_len = row.geometry.exterior().0.len();
         geometry_builder.push_polygon(Some(&row.geometry))
             .map_err(|e| anyhow::anyhow!("Failed to push polygon to builder: {} (polygon extent: [{:.2}, {:.2}] to [{:.2}, {:.2}], exterior points: {})", 
                 e, row.bbox_minx, row.bbox_miny, row.bbox_maxx, row.bbox_maxy, exterior_len))?;
@@ -1121,7 +1160,7 @@ fn write_geoparquet(
     writer.close()
         .context("Failed to finalize GeoParquet file")?;
     
-    debug!("Successfully wrote {} rows to GeoParquet file", rows.len());
+    debug!("Successfully wrote {} rows to GeoParquet file ({} invalid rows were filtered out)", valid_capacity, rows.len() - valid_capacity);
     
     Ok(())
 }

@@ -313,6 +313,81 @@ You can enable this with the `--3dtiles-tileset-only` option.
   - [ ] Wavefront OBJ
   - [ ] GeoPackage
 
+## Exporting Native GLB Files
+
+*tyler* can export native GLB (binary glTF) files directly, without creating a 3D Tiles tileset structure. This is useful when you need standalone GLB files for individual features or when integrating with other workflows.
+
+### From JSONL Files
+
+When working with CityJSON Features stored as individual `.city.jsonl` files, use the `--native-glb-from-jsonl` flag. This requires a metadata file to provide CRS and transform information.
+
+```shell
+tyler \
+    --metadata metadata.city.json \
+    --features features/ \
+    --output output/ \
+    --object-type Building \
+    --native-glb-from-jsonl
+```
+
+### From FCB Files (Local)
+
+The FCB (Feature Collection Binary) format is a more efficient binary format for storing CityJSON Features. When using a local FCB file, you can export native GLB files with the `--native-glb-from-fcb` flag.
+
+**Note:** When using FCB format (both local and HTTP), the metadata file (`--metadata`) is not required. The CRS and transform information are embedded within the FCB file itself.
+
+```shell
+tyler \
+    --features features.fcb \
+    --output output/ \
+    --object-type Building \
+    --native-glb-from-fcb
+```
+
+### From FCB Files (HTTP)
+
+*tyler* can also read FCB files directly from an HTTP endpoint, which is useful for remote data sources or when serving features from a web server.
+
+```shell
+tyler \
+    --features http://example.com:3000/features.fcb \
+    --output output/ \
+    --object-type Building \
+    --native-glb-from-fcb
+```
+
+**Note:** As with local FCB files, no metadata file is required when reading from an HTTP endpoint.
+
+## Exporting to GeoParquet
+
+*tyler* can export CityJSON Features to the GeoParquet format, which is a columnar storage format optimized for geospatial data analysis and processing.
+
+The `--to-geoparquet` flag converts the input features into a GeoParquet file, preserving all attributes and geometries. This format is particularly useful for data analysis workflows, integration with tools like Apache Spark or DuckDB, and efficient storage of large feature collections.
+
+```shell
+tyler \
+    --metadata metadata.city.json \
+    --features features/ \
+    --output output/ \
+    --to-geoparquet \
+    --object-type Building
+```
+
+The output will be a `.parquet` file containing the selected CityObject types with all their attributes and geometries stored in a format optimized for analytical queries and spatial operations.
+
+## Performance Metrics
+
+The following table shows performance metrics for different export formats, measured on the same dataset. These metrics provide general guidance on resource usage and execution time for each export type.
+
+| Export Format | Elapsed Time | User Time (s) | System Time (s) | CPU Usage (%) | Max Memory (MB) | File System Inputs |
+|---------------|--------------|---------------|-----------------|---------------|-----------------|-------------------|
+| GeoParquet (`--to-geoparquet`) | 11.98s | 3.40 | 350.67 | 2955% | 133 | 22,624 |
+| Native GLB from JSONL (`--native-glb-from-jsonl`) | 1m 35s | 10.57 | 625.53 | 666% | 207 | 17,864 |
+| Native GLB from FCB local (`--native-glb-from-fcb`) | 35.79s | 13.18 | 6.63 | 55% | 312 | 18,120 |
+| Native GLB from FCB HTTP (`--native-glb-from-fcb`) | 9.98s | 10.37 | 4.51 | 149% | 342 | 22,864 |
+
+*Note: Performance metrics are highly dependent on dataset size, hardware configuration, storage type (SSD vs HDD), and network conditions (for HTTP sources). Use these values as general guidance rather than exact predictions.*
+
 ## Funding
 
 Version 0.3 (3D Tiles) was funded by the [Dutch Kadaster](https://www.kadaster.nl/).

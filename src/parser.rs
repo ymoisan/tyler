@@ -169,13 +169,13 @@ impl World {
         let mut nr_features = 0;
         let mut nr_features_ignored = 0;
         let mut extent_qc = Self::extent_qc_init(&path_features_root, cityobject_types.as_ref())
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                format!(
                     "Did not find any CityJSONFeature of type {:?} in {}",
                     cityobject_types,
                     path_features_root.display()
                 )
-            });
+            })?;
         let mut cityobject_types_ignored: Vec<CityObjectType> = Vec::new();
         for (i, extent) in extents.iter().enumerate() {
             nr_features += extent.nr_features;
@@ -229,10 +229,10 @@ impl World {
             }
         }
         if nr_features == 0 {
-            panic!(
+            return Err(format!(
                 "Did not find any CityJSONFeatures of type {:?}",
                 cityobject_types
-            );
+            ).into());
         }
         debug!(
             "Found {} features of type {:?}",
@@ -1089,14 +1089,15 @@ pub struct Metadata {
 /// Coordinate Reference System as defined by the
 /// [referenceSystem](https://www.cityjson.org/specs/1.1.3/#referencesystem-crs) CityJSON object.
 #[derive(Serialize, Deserialize, Debug)]
-pub struct Crs(String);
+pub struct Crs(pub String);
 
 impl Crs {
     /// Return the EPSG code from the CRS definition, if the CRS definition is indeed an EPSG.
     ///
     /// ## Examples
     /// ```
-    /// let crs = CRS("https://www.opengis.net/def/crs/EPSG/0/7415");
+    /// use tyler::parser::Crs;
+    /// let crs = Crs("https://www.opengis.net/def/crs/EPSG/0/7415".to_string());
     /// let epsg_code = crs.to_epsg().unwrap();
     /// assert_eq!(7415_u16, epsg_code);
     /// ```

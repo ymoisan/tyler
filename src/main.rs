@@ -79,16 +79,19 @@ fn write_inputs(
     let path_features_input_file = path_features_input_dir
         .join(file_name)
         .with_extension("input");
-    fs::create_dir_all(path_features_input_file.parent().unwrap()).unwrap_or_else(|_| {
+    let parent_dir = path_features_input_file.parent()
+        .ok_or_else(|| format!("Path has no parent directory: {:?}", path_features_input_file))
+        .expect("Path should have a parent directory");
+    fs::create_dir_all(parent_dir).unwrap_or_else(|e| {
         panic!(
-            "should be able to create the directory {:?}",
-            path_features_input_file.parent().unwrap()
+            "should be able to create the directory {:?}: {}",
+            parent_dir, e
         )
     });
-    let _fi_file = File::create(&path_features_input_file).unwrap_or_else(|_| {
+    let _fi_file = File::create(&path_features_input_file).unwrap_or_else(|e| {
         panic!(
-            "should be able to create a file {:?}",
-            &path_features_input_file
+            "should be able to create a file {:?}: {}",
+            &path_features_input_file, e
         )
     });
     let mut feature_input = BufWriter::new(_fi_file);
@@ -701,14 +704,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "--output_format={}",
                     &format.to_string().to_lowercase()
                 ))
-                .arg(format!("--output_file={}", &output_file.to_str().unwrap()))
+                .arg(format!("--output_file={}", &output_file.to_string_lossy()))
                 .arg(format!(
                     "--path_metadata={}",
-                    &world.path_metadata.to_str().unwrap_or("")
+                    &world.path_metadata.to_string_lossy()
                 ))
                 .arg(format!(
                     "--path_features_input_file={}",
-                    &path_features_input_file.to_str().unwrap()
+                    &path_features_input_file.to_string_lossy()
                 ))
                 .arg(format!("--min_x={}", b[0]))
                 .arg(format!("--min_y={}", b[1]))

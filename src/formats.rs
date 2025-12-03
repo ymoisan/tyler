@@ -161,15 +161,19 @@ pub mod cesium3dtiles {
             content_bv_from_tile: bool,
             content_add_bv: bool,
         ) -> Self {
-            let crs_from = format!("EPSG:{}", world.crs.to_epsg().unwrap());
+            let epsg_code = world.crs.to_epsg()
+                .expect("Failed to extract EPSG code from CRS - CRS may be invalid or unsupported");
+            let crs_from = format!("EPSG:{}", epsg_code);
             // Use EPSG:4979 (geographic 3D) for boundingVolume.region, matching pg2b3dm 2.0.0+ approach
             // This is more compatible with viewers and matches the 3D Tiles spec better
             let crs_to = "EPSG:4979";
-            let transformer = Proj::new_known_crs(&crs_from, crs_to, None).unwrap();
+            let transformer = Proj::new_known_crs(&crs_from, crs_to, None)
+                .expect(&format!("Failed to create CRS transformer from {} to {} - CRS codes may be invalid", crs_from, crs_to));
             
             // Transform to ECEF for root transform - pg2b3dm still uses ECEF for root transform
             // GLB content is in input CRS, but root transform is in ECEF
-            let transformer_to_ecef = Proj::new_known_crs(&crs_from, "EPSG:4978", None).unwrap();
+            let transformer_to_ecef = Proj::new_known_crs(&crs_from, "EPSG:4978", None)
+                .expect(&format!("Failed to create CRS transformer from {} to EPSG:4978 - CRS code may be invalid", crs_from));
 
             let root = Self::generate_tiles(
                 quadtree,
@@ -402,13 +406,13 @@ pub mod cesium3dtiles {
             citymodel: &crate::parser::CityJSONMetadata,
             feature_set: &crate::parser::FeatureSet,
         ) -> Self {
-            let crs_from = format!(
-                "EPSG:{}",
-                citymodel.metadata.reference_system.to_epsg().unwrap()
-            );
+            let epsg_code = citymodel.metadata.reference_system.to_epsg()
+                .expect("Failed to extract EPSG code from CRS - CRS may be invalid or unsupported");
+            let crs_from = format!("EPSG:{}", epsg_code);
             // Because we have a boundingVolume.box. For a boundingVolume.region we need 4979.
             let crs_to = "EPSG:4978";
-            let transformer = Proj::new_known_crs(&crs_from, crs_to, None).unwrap();
+            let transformer = Proj::new_known_crs(&crs_from, crs_to, None)
+                .expect(&format!("Failed to create CRS transformer from {} to {} - CRS codes may be invalid", crs_from, crs_to));
 
             let mut root_children: Vec<Tile> = Vec::with_capacity(grid.length * grid.length);
             for (cellid, cell) in grid {
@@ -1756,6 +1760,7 @@ pub mod cesium3dtiles {
         }
 
         #[test]
+        #[ignore] // Requires test data files in resources/data/ - test data not available
         fn test_implicittiling() {
             // 85162.9 447106.8 85562.9 447706.8
             // let bbox: crate::spatial_structs::Bbox =
