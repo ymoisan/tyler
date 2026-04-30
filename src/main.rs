@@ -13,9 +13,11 @@
 // limitations under the License.
 mod cli;
 mod cityjsonl_source;
+mod copc_reader;
 mod formats;
 mod geoparquet_source;
 mod gltf_writer;
+mod las_source;
 mod material;
 mod parser;
 mod proj;
@@ -35,7 +37,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::formats::cesium3dtiles::{Tile, TileId};
+use crate::formats::cesium3dtiles::{Tile, TileId, SplatLodConfig};
 use clap::Parser;
 use log::{debug, info, log_enabled, warn, Level};
 use rayon::prelude::*;
@@ -214,6 +216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build per-CityObjectType material config from TOML file and/or CLI args
     let material_config = cli.build_material_config()
         .map_err(|e| format!("Failed to build material config: {}", e))?;
+
+    // Build attribute whitelist from --3dtiles-metadata-3dbag / --3dtiles-metadata-roofer flags
+    let attr_whitelist = cli.attribute_whitelist();
     
     // Validate PROJ availability for coordinate transformations
     debug!("Validating PROJ library availability for coordinate transformations...");
@@ -339,38 +344,116 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         features.extend(tree_features);
                     }
 
+                    // Filter features to LAS bounding box (if --las-rgb provided)
+                    // and inject LAS z-bounds into grid when footprints are 2D.
+                    let las_z_bounds = if let Some(las_path) = &cli.las_rgb {
+                        let (las_min, las_max) = las_source::read_las_bounds(las_path)?;
+                        info!("LAS bounding box: [{:.1}, {:.1}, {:.1}] to [{:.1}, {:.1}, {:.1}]",
+                              las_min[0], las_min[1], las_min[2], las_max[0], las_max[1], las_max[2]);
+                        features = las_source::filter_features_by_las_bbox(
+                            features,
+                            &cityjsonl_meta.transform,
+                            &las_min,
+                            &las_max,
+                        );
+                        Some((las_min[2], las_max[2]))
+                    } else {
+                        None
+                    };
+
+                    // Use smaller grid cells when splats dominate the payload
+                    let effective_cellsize = if cli.splats {
+                        let cs = grid_cellsize.min(100);
+                        if cs != grid_cellsize {
+                            info!("Reduced grid cell size from {} to {} for splat tiling", grid_cellsize, cs);
+                        }
+                        cs
+                    } else {
+                        grid_cellsize
+                    };
+
                     // Build World from in-memory features
                     let mut world = parser::World::from_features(
                         cityjsonl_meta.transform,
                         cityjsonl_meta.reference_system,
                         features,
-                        grid_cellsize,
+                        effective_cellsize,
                         cli.object_type,
                         cli.grid_minz,
                         cli.grid_maxz,
                     )?;
+
+                    // Override grid Z with LAS z-bounds when footprints are 2D
+                    if let Some((zmin, zmax)) = las_z_bounds {
+                        let dz = zmax - zmin;
+                        if dz > (world.grid.bbox[5] - world.grid.bbox[2]) {
+                            info!("Setting grid Z from LAS bounds: [{:.1}, {:.1}]", zmin, zmax);
+                            world.grid.bbox[2] = zmin;
+                            world.grid.bbox[5] = zmax;
+                        }
+                    }
+
                     world.index_with_grid();
                     world
                 }
-                // Trees only (no buildings) — use file-based path for standalone parquet
+                // Trees only (no buildings) — fully in-memory, no _prep directory
                 (None, Some(trees_path)) => {
-                    let prep_dir = cli.output.join("_prep");
-                    fs::create_dir_all(&prep_dir)?;
-                    let (path_metadata, path_features) =
-                        geoparquet_source::process_geoparquet_standalone(
+                    let (tree_transform, tree_ref_system, mut tree_features) =
+                        geoparquet_source::load_geoparquet_standalone_to_memory(
                             trees_path,
-                            &prep_dir,
                             "SolitaryVegetationObject",
                             cli.tree_id_column.as_deref(),
                         )?;
-                    let mut world = parser::World::new(
-                        &path_metadata,
-                        &path_features,
-                        grid_cellsize,
+                    info!("Loaded {} tree features into memory (standalone)", tree_features.len());
+
+                    // Filter features to LAS bounding box (if --las-rgb provided)
+                    // and inject LAS z-bounds into grid when footprints are 2D.
+                    let las_z_bounds = if let Some(las_path) = &cli.las_rgb {
+                        let (las_min, las_max) = las_source::read_las_bounds(las_path)?;
+                        info!("LAS bounding box: [{:.1}, {:.1}, {:.1}] to [{:.1}, {:.1}, {:.1}]",
+                              las_min[0], las_min[1], las_min[2], las_max[0], las_max[1], las_max[2]);
+                        let filtered = las_source::filter_features_by_las_bbox(
+                            tree_features,
+                            &tree_transform,
+                            &las_min,
+                            &las_max,
+                        );
+                        tree_features = filtered;
+                        Some((las_min[2], las_max[2]))
+                    } else {
+                        None
+                    };
+
+                    // Use smaller grid cells when splats dominate the payload
+                    let effective_cellsize = if cli.splats {
+                        let cs = grid_cellsize.min(100);
+                        if cs != grid_cellsize {
+                            info!("Reduced grid cell size from {} to {} for splat tiling", grid_cellsize, cs);
+                        }
+                        cs
+                    } else {
+                        grid_cellsize
+                    };
+
+                    let mut world = parser::World::from_features(
+                        tree_transform,
+                        tree_ref_system,
+                        tree_features,
+                        effective_cellsize,
                         cli.object_type,
                         cli.grid_minz,
                         cli.grid_maxz,
                     )?;
+
+                    // Override grid Z with LAS z-bounds when footprints are 2D
+                    if let Some((zmin, zmax)) = las_z_bounds {
+                        let dz = zmax - zmin;
+                        if dz > (world.grid.bbox[5] - world.grid.bbox[2]) {
+                            info!("Setting grid Z from LAS bounds: [{:.1}, {:.1}]", zmin, zmax);
+                            world.grid.bbox[2] = zmin;
+                            world.grid.bbox[5] = zmax;
+                        }
+                    }
                     world.index_with_grid();
                     world
                 }
@@ -408,11 +491,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build quadtree
+    // When splats are the primary payload, force maximum subdivision so each grid cell
+    // becomes its own tile. This prevents a single multi-GB GLB when the building geometry
+    // (which the quadtree normally uses for capacity) is sparse.
+    let effective_qtree_capacity = if cli.splats {
+        info!("Splats mode: forcing quadtree leaf-per-cell (capacity=0)");
+        spatial_structs::QuadTreeCapacity::Vertices(0)
+    } else {
+        quadtree_capacity
+    };
     debug!("[Progress] Starting quadtree construction...");
     let quadtree: spatial_structs::QuadTree = match debug_data.quadtree {
         None => {
             debug!("Building quadtree");
-            let quadtree = spatial_structs::QuadTree::from_world(&world, quadtree_capacity);
+            let quadtree = spatial_structs::QuadTree::from_world(&world, effective_qtree_capacity);
             debug!("[Progress] Completed quadtree construction");
             quadtree
         }
@@ -444,6 +536,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3D Tiles
     debug!("[Progress] Starting tileset generation...");
+
+    // Pre-compute CRS string early — needed for splat loading and tileset generation.
+    let epsg_code = world
+        .crs
+        .to_epsg()
+        .map_err(|e| format!("Failed to read EPSG code from metadata: {}", e))?;
+    let crs_from = format!("EPSG:{}", epsg_code);
+
+    // Load LAS/LAZ splat cloud before tileset generation so we can extract LOD config.
+    let splat_cloud: Option<std::sync::Arc<las_source::SplatCloud>> = match &cli.las_rgb {
+        Some(las_path) if cli.splats => {
+            info!("Loading LAS/LAZ point cloud from {:?}", las_path);
+            let cloud = las_source::load_las_as_splats(las_path, &crs_from, &world.grid, cli.splat_lod_tiers, cli.de_noising)?;
+            info!("Indexed {} splats across {} grid cells ({} LOD tiers)",
+                cloud.splats.len(), cloud.cell_index.len(), cloud.n_lod_tiers);
+            Some(std::sync::Arc::new(cloud))
+        }
+        _ => None,
+    };
+
+    // Build SplatLodConfig from the loaded cloud (if any) for tileset generation.
+    let splat_lod_config: Option<SplatLodConfig> = splat_cloud.as_ref().map(|cloud| {
+        SplatLodConfig {
+            n_tiers: cloud.n_lod_tiers,
+            tier_spacings: cloud.tier_spacings.clone(),
+        }
+    });
+
     let tileset_path = cli.output.join("tileset.json");
     let subtrees_path = cli.output.join("subtrees");
     let tileset_path_unpruned = cli.output.join("tileset_unpruned.json");
@@ -459,6 +579,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.cesium3dtiles_content_bv_from_tile,
         cli.cesium3dtiles_content_add_bv,
         cli.tiles_version,
+        splat_lod_config.as_ref(),
     );
     debug!("[Progress] Completed tileset generation");
 
@@ -518,7 +639,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tiles_subtrees
         }
         false => {
-            let just_tiles = tileset.collect_leaves();
+            let just_tiles = if splat_lod_config.is_some() {
+                tileset.collect_all_with_content()
+            } else {
+                tileset.collect_leaves()
+            };
             // FIXME: here we need Vec<(Tile, TileId)> instead of Vec<&Tile>, for the same reason
             //  as above
             let tiles: Vec<(Tile, TileId)> = just_tiles
@@ -539,17 +664,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(&path_output_tiles)?;
         debug!("Created output directory {:#?}", &path_output_tiles);
 
+        // Compute root center in ECEF once for all tiles.
+        let root_bbox = quadtree.bbox(&world.grid);
+        let root_center_input_crs = [
+            (root_bbox[0] + root_bbox[3]) * 0.5,
+            (root_bbox[1] + root_bbox[4]) * 0.5,
+            (root_bbox[2] + root_bbox[5]) * 0.5,
+        ];
+        let root_center_proj = crate::proj::Proj::new_known_crs(&crs_from, "EPSG:4978", None)
+            .map_err(|e| format!("Create CRS to ECEF transformer: {}", e))?;
+        let root_center_ecef = root_center_proj
+            .convert((root_center_input_crs[0], root_center_input_crs[1], root_center_input_crs[2]))
+            .map_err(|e| format!("Transform root center to ECEF: {}", e))?;
+        debug!("Pre-computed root_center_ecef: {:?}", root_center_ecef);
+
+        let splat_cloud_ref = splat_cloud.as_deref();
+
         let tiles_len = tiles.len();
         debug!("Starting to process {} tiles with native glTF generation...", tiles_len);
         let processed_count = AtomicUsize::new(0);
         let lod_filter = cli.lod.as_deref();
+        let tile_lod_map = &tileset.tile_lod_map;
         let tiles_failed_iter = tiles.into_par_iter().map(|(tile, tileid)| {
             let tileid_grid = &tile.id;
             let qtree_nodeid: spatial_structs::QuadTreeNodeId = tileid_grid.into();
             let qtree_node = quadtree
                 .node(&qtree_nodeid)
                 .unwrap_or_else(|| panic!("did not find tile {} in quadtree", tileid_grid));
-            if qtree_node.nr_items == 0 {
+            // Skip empty tiles only when NOT in splat LOD mode (in LOD mode, even tiles
+            // with 0 building features may have splat content).
+            if qtree_node.nr_items == 0 && splat_cloud_ref.is_none() {
                 let count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
                 if count % 10 == 0 || count == tiles_len {
                     debug!("Progress: {}/{} tiles processed ({}%)", count, tiles_len, (count * 100) / tiles_len);
@@ -562,10 +706,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let tileid_string = tileid.to_string();
             let file_name = tileid_string;
             let output_file = path_output_tiles.join(&file_name).with_extension(cli.tiles_version.extension());
+            // Ensure parent directories exist for nested tile paths (e.g., t/0/0/0.glb)
+            if let Some(parent) = output_file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             if log_enabled!(Level::Debug) {
                 debug!("Writing native GLB for tile {} to {:?}", tile.id, output_file);
             }
-            match gltf_writer::write_tile_glb(&world, &quadtree, qtree_nodeid, &output_file, &material_config, cli.tiles_version, lod_filter) {
+            let splat_lod_tier = tile_lod_map.get(tileid_grid).copied();
+            match gltf_writer::write_tile_glb(&world, &quadtree, qtree_nodeid, &output_file, &material_config, cli.tiles_version, lod_filter, attr_whitelist.as_ref(), &crs_from, root_center_ecef, splat_cloud_ref, splat_lod_tier, cli.splats_only) {
                 Ok(_) => {
                     let count = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
                     if count % 10 == 0 || count == tiles_len {

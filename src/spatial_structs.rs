@@ -225,6 +225,15 @@ impl QuadTree {
         None
     }
 
+    /// Maximum depth of the quadtree (0 = single node, 1 = root + leaves, etc.)
+    pub fn max_depth(&self) -> u16 {
+        if self.children.is_empty() {
+            0
+        } else {
+            1 + self.children.iter().map(|c| c.max_depth()).max().unwrap_or(0)
+        }
+    }
+
     pub fn cells(&self) -> Vec<&CellId> {
         let mut cellids: Vec<&CellId> = Vec::new();
         let mut q = VecDeque::new();
@@ -973,7 +982,6 @@ mod tests {
 
     #[test]
     fn test_create_grid() {
-        let extent = [84372.91, 446316.814, -10.66, 171800.0, 472700.0, 52.882];
         let extent = [13603.33, 314127.708, -15.0, 268943.608, 612658.036, 400.0];
         println!("extent: {}", bbox_to_wkt(&extent));
         let grid = SquareGrid::new(&extent, 500, 7415);

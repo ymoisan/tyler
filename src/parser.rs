@@ -1178,16 +1178,76 @@ type Shell = Vec<Surface>;
 type MultiSurface = Vec<Surface>;
 type Solid = Vec<Shell>;
 
+/// A single semantic surface definition from CityJSON geometry semantics.
+/// The `type` field identifies the surface class (e.g. "RoofSurface", "WallSurface").
+/// Additional keys (e.g. azimuth, slope) are captured in `other`.
+#[derive(Deserialize, Debug, Clone)]
+pub struct SemanticSurface {
+    #[serde(rename = "type")]
+    pub surface_type: String,
+    /// All extra keys beside "type" (azimuth, slope, elevation, etc.).
+    #[serde(flatten)]
+    #[allow(dead_code)]
+    pub other: serde_json::Map<String, serde_json::Value>,
+}
+
+/// CityJSON geometry semantics block: a list of surface definitions and a
+/// values array that maps each boundary surface index to a definition index.
+/// For Solid geometries, values is nested one level deeper (per shell).
+#[derive(Deserialize, Debug, Clone)]
+pub struct Semantics {
+    pub surfaces: Vec<SemanticSurface>,
+    pub values: serde_json::Value,
+}
+
+impl Semantics {
+    /// Resolve the semantic surface type for a given surface index within a
+    /// specific shell. For MultiSurface, pass `shell_idx = 0`.
+    /// Returns `None` if semantics are absent, the value is null, or the index
+    /// is out of range.
+    pub fn surface_type(&self, shell_idx: usize, surface_idx: usize) -> Option<&str> {
+        let values_array = self.values.as_array()?;
+        // For Solid: values is [[0,1,1,...], [0,1,...], ...] (per shell)
+        // For MultiSurface: values is [0,1,1,...] (flat)
+        let row = if values_array.first()?.is_array() {
+            // Solid: index by shell then surface
+            values_array.get(shell_idx)?.as_array()?
+        } else {
+            // MultiSurface: flat list
+            values_array
+        };
+        let def_idx = row.get(surface_idx)?.as_u64()? as usize;
+        self.surfaces.get(def_idx).map(|s| s.surface_type.as_str())
+    }
+
+    /// Resolve the full semantic surface definition for a given surface index.
+    #[allow(dead_code)]
+    pub fn surface_def(&self, shell_idx: usize, surface_idx: usize) -> Option<&SemanticSurface> {
+        let values_array = self.values.as_array()?;
+        let row = if values_array.first()?.is_array() {
+            values_array.get(shell_idx)?.as_array()?
+        } else {
+            values_array
+        };
+        let def_idx = row.get(surface_idx)?.as_u64()? as usize;
+        self.surfaces.get(def_idx)
+    }
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum Geometry {
     MultiSurface {
         lod: Option<String>,
         boundaries: MultiSurface,
+        #[serde(default)]
+        semantics: Option<Semantics>,
     },
     Solid {
         lod: Option<String>,
         boundaries: Solid,
+        #[serde(default)]
+        semantics: Option<Semantics>,
     },
 }
 
@@ -1198,6 +1258,13 @@ impl Geometry {
             Geometry::Solid { lod, .. } => lod.as_deref(),
         }
     }
+
+    pub fn semantics(&self) -> Option<&Semantics> {
+        match self {
+            Geometry::MultiSurface { semantics, .. } => semantics.as_ref(),
+            Geometry::Solid { semantics, .. } => semantics.as_ref(),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -1205,6 +1272,9 @@ pub struct CityObject {
     #[serde(rename = "type")]
     pub cotype: CityObjectType,
     pub geometry: Option<Vec<Geometry>>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub attributes: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[cfg(test)]

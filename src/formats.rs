@@ -35,6 +35,13 @@ pub mod cesium3dtiles {
     use crate::proj::Proj;
     use crate::spatial_structs::{Bbox, CellId, QuadTree, QuadTreeNodeId, SquareGrid};
 
+    /// Configuration for progressive splat LOD in the tileset.
+    #[derive(Debug, Clone)]
+    pub struct SplatLodConfig {
+        pub n_tiers: u8,
+        pub tier_spacings: Vec<f64>,
+    }
+
     /// [Tileset](https://github.com/CesiumGS/3d-tiles/tree/main/specification#tileset).
     ///
     /// Not supported: `extras`.
@@ -54,6 +61,9 @@ pub mod cesium3dtiles {
         extensions: Option<Extensions>,
         #[serde(skip)]
         tiles_version: TilesVersion,
+        /// Mapping from TileId to LOD tier for splat-based tiles.
+        #[serde(skip)]
+        pub tile_lod_map: HashMap<TileId, u8>,
     }
 
     impl Tileset {
@@ -163,6 +173,7 @@ pub mod cesium3dtiles {
             content_bv_from_tile: bool,
             content_add_bv: bool,
             tiles_version: TilesVersion,
+            splat_lod: Option<&SplatLodConfig>,
         ) -> Self {
             let crs_from = format!("EPSG:{}", world.crs.to_epsg().unwrap());
             // Use EPSG:4979 (geographic 3D) for boundingVolume.region, matching pg2b3dm 2.0.0+ approach
@@ -174,6 +185,8 @@ pub mod cesium3dtiles {
             // GLB content is in input CRS, but root transform is in ECEF
             let transformer_to_ecef = Proj::new_known_crs(&crs_from, "EPSG:4978", None).unwrap();
 
+            let mut tile_lod_map: HashMap<TileId, u8> = HashMap::new();
+            let quadtree_max_depth = quadtree.max_depth();
             let root = Self::generate_tiles(
                 quadtree,
                 world,
@@ -185,6 +198,9 @@ pub mod cesium3dtiles {
                 content_bv_from_tile,
                 content_add_bv,
                 tiles_version,
+                splat_lod,
+                &mut tile_lod_map,
+                quadtree_max_depth,
             );
 
             // Add root transform to translate to ECEF center - matches pg2b3dm 2.0.0+ approach
@@ -248,6 +264,7 @@ pub mod cesium3dtiles {
                 extensions_required,
                 extensions,
                 tiles_version,
+                tile_lod_map,
             }
         }
 
@@ -266,6 +283,9 @@ pub mod cesium3dtiles {
             content_bv_from_tile: bool,
             content_add_bv: bool,
             tiles_version: TilesVersion,
+            splat_lod: Option<&SplatLodConfig>,
+            tile_lod_map: &mut HashMap<TileId, u8>,
+            quadtree_max_depth: u16,
         ) -> Tile {
             if !quadtree.children.is_empty() {
                 let tile_id = TileId::from(&quadtree.id);
@@ -273,12 +293,7 @@ pub mod cesium3dtiles {
                 if quadtree.children.len() != 4 {
                     warn!("Quadtree does not have 4 children {:?}", &quadtree);
                 }
-                // Tile bounding volume
-                // Set the bounding volume height from the grid height, which can be set with
-                // an argument, or else calculated from the data (content).
                 let mut tile_bbox = quadtree.bbox(&world.grid);
-                // But it can happen with faulty data, eg. 3D Basisvoorziening,
-                // that maxz is less than minz.
                 if tile_bbox[5] < tile_bbox[2] {
                     debug!("Internal tile {tile_id} {:?} (in input CRS) bbox maxz {} is less than minz {}. Replacing maxz with minz + minz * 0.01.", &tile_bbox, tile_bbox[5], tile_bbox[2]);
                     tile_bbox[5] = tile_bbox[2] + tile_bbox[2] * 0.01;
@@ -286,20 +301,47 @@ pub mod cesium3dtiles {
                 let bounding_volume =
                     BoundingVolume::region_from_bbox(&tile_bbox, transformer).unwrap();
 
-                // The geometric error of a tile is computed based on the specified error
-                // for the nodes have leafs as children (assuming all leaf nodes are at the same level)
-                let level_multiplier = (tile_bbox[3] - tile_bbox[0]) / (arg_cellsize as f64) - 2.0;
-                let mut d = geometric_error_above_leaf * level_multiplier;
-                let d_string = format!("{d:.2}");
-                if d < 0.0 {
-                    warn!("d is negative in internal tile {tile_id}");
-                } else if d_string == *"0.00" {
-                    // Because, for instance we have a —grid-cellsize 250, then a parent of the deepest level will have an edge length of 2 * 250.
-                    // So for the 'level_multiplier' formula we get:
-                    // 500 / 250 - 2.0 = 0
-                    // Which then results in a 'd' of 0.
-                    d = geometric_error_above_leaf;
-                }
+                // Compute geometric error
+                let (d, refinement, content) = if let Some(lod_cfg) = splat_lod {
+                    // Splat LOD: use ADD refinement and tier-based geometricError.
+                    // Map quadtree level to LOD tier: root = tier 0 (coarsest),
+                    // deeper levels = higher tiers.
+                    let tier = if quadtree_max_depth == 0 || lod_cfg.n_tiers <= 1 {
+                        0u8
+                    } else {
+                        let t = ((tile_id.level as f32 / quadtree_max_depth as f32) * lod_cfg.n_tiers as f32)
+                            .floor() as u8;
+                        t.min(lod_cfg.n_tiers - 2) // internal nodes get tiers 0..n-2; leaves get n-1
+                    };
+                    tile_lod_map.insert(tile_id.clone(), tier);
+
+                    // geometricError: interpolate by depth for strict monotonic decrease.
+                    // Root (level 0) gets the coarsest spacing; deepest internal node
+                    // approaches (but does not reach) 0. Leaves are always 0.
+                    let ge_top = lod_cfg.tier_spacings[0];
+                    let depth_ratio = tile_id.level as f64 / quadtree_max_depth.max(1) as f64;
+                    let ge = ge_top * (1.0 - depth_ratio);
+
+                    // Internal nodes get content in ADD mode
+                    let content = Some(Content {
+                        bounding_volume: None,
+                        uri: format!("t/{}.{}", quadtree.id, tiles_version.extension()),
+                    });
+
+                    (ge, Refinement::Add, content)
+                } else {
+                    // Standard REPLACE mode
+                    let level_multiplier = (tile_bbox[3] - tile_bbox[0]) / (arg_cellsize as f64) - 2.0;
+                    let mut d = geometric_error_above_leaf * level_multiplier;
+                    let d_string = format!("{d:.2}");
+                    if d < 0.0 {
+                        d = geometric_error_above_leaf;
+                    } else if d_string == *"0.00" {
+                        d = geometric_error_above_leaf;
+                    }
+                    (d, Refinement::Replace, None)
+                };
+
                 let mut tile_children: Vec<Tile> = Vec::new();
                 for child in quadtree.children.iter() {
                     tile_children.push(Self::generate_tiles(
@@ -313,6 +355,9 @@ pub mod cesium3dtiles {
                         content_bv_from_tile,
                         content_add_bv,
                         tiles_version,
+                        splat_lod,
+                        tile_lod_map,
+                        quadtree_max_depth,
                     ));
                 }
                 Tile {
@@ -320,9 +365,9 @@ pub mod cesium3dtiles {
                     bounding_volume,
                     geometric_error: d,
                     viewer_request_volume: None,
-                    refine: Some(Refinement::Replace),
+                    refine: Some(refinement),
                     transform: None,
-                    content: None,
+                    content,
                     children: Some(tile_children),
                     implicit_tiling: None,
                 }
@@ -340,65 +385,76 @@ pub mod cesium3dtiles {
                     BoundingVolume::region_from_bbox(&tile_bbox, transformer).unwrap();
                 let mut content: Option<Content> = None;
 
-                if quadtree.nr_items > 0 {
-                    let mut tile_content_bbox_rw =
-                        quadtree.node_content_bbox(world, arg_minz, arg_maxz);
-                    if content_bv_from_tile {
-                        tile_content_bbox_rw = tile_bbox;
+                if quadtree.nr_items > 0 || splat_lod.is_some() {
+                    if splat_lod.is_some() {
+                        // Splat LOD: leaf gets finest tier, content URI from quadtree id
+                        let finest_tier = splat_lod.unwrap().n_tiers - 1;
+                        tile_lod_map.insert(tile_id.clone(), finest_tier);
+                        content = Some(Content {
+                            bounding_volume: None,
+                            uri: format!("t/{}.{}", quadtree.id, tiles_version.extension()),
+                        });
                     } else {
-                        // Stretch the tile bbox so that it covers the content bbox
-                        tile_content_bbox_rw[0..3]
-                            .iter()
-                            .enumerate()
-                            .for_each(|(i, min_c)| {
-                                if min_c < &tile_bbox[i] {
-                                    tile_bbox[i] = min_c - min_c * 0.01;
-                                }
-                            });
-                        tile_content_bbox_rw[3..6]
-                            .iter()
-                            .enumerate()
-                            .for_each(|(i0, max_c)| {
-                                let i = 3 + i0;
-                                if max_c > &tile_bbox[i] {
-                                    tile_bbox[i] = max_c + max_c * 0.01;
-                                }
-                            });
-                    }
-
-                    if tile_content_bbox_rw[5] < tile_content_bbox_rw[2] {
-                        // See explanation above
-                        debug!("Leaf tile content {tile_id} {:?} (in input CRS) bbox maxz {} is less than minz {}. Replacing maxz with minz + minz * 0.01.", &tile_content_bbox_rw, tile_content_bbox_rw[5], tile_content_bbox_rw[2]);
-                        tile_content_bbox_rw[5] =
-                            tile_content_bbox_rw[2] + tile_content_bbox_rw[2] * 0.01;
-                    }
-                    let content_bounding_volume =
-                        BoundingVolume::box_from_bbox(&tile_content_bbox_rw, transformer).unwrap();
-
-                    content = Some(Content {
-                        bounding_volume: if content_add_bv {
-                            Some(content_bounding_volume)
+                        let mut tile_content_bbox_rw =
+                            quadtree.node_content_bbox(world, arg_minz, arg_maxz);
+                        if content_bv_from_tile {
+                            tile_content_bbox_rw = tile_bbox;
                         } else {
-                            None
-                        },
-                        uri: format!("t/{}.{}", quadtree.id, tiles_version.extension()),
-                    });
+                            // Stretch the tile bbox so that it covers the content bbox
+                            tile_content_bbox_rw[0..3]
+                                .iter()
+                                .enumerate()
+                                .for_each(|(i, min_c)| {
+                                    if min_c < &tile_bbox[i] {
+                                        tile_bbox[i] = min_c - min_c * 0.01;
+                                    }
+                                });
+                            tile_content_bbox_rw[3..6]
+                                .iter()
+                                .enumerate()
+                                .for_each(|(i0, max_c)| {
+                                    let i = 3 + i0;
+                                    if max_c > &tile_bbox[i] {
+                                        tile_bbox[i] = max_c + max_c * 0.01;
+                                    }
+                                });
+                        }
+
+                        if tile_content_bbox_rw[5] < tile_content_bbox_rw[2] {
+                            // See explanation above
+                            debug!("Leaf tile content {tile_id} {:?} (in input CRS) bbox maxz {} is less than minz {}. Replacing maxz with minz + minz * 0.01.", &tile_content_bbox_rw, tile_content_bbox_rw[5], tile_content_bbox_rw[2]);
+                            tile_content_bbox_rw[5] =
+                                tile_content_bbox_rw[2] + tile_content_bbox_rw[2] * 0.01;
+                        }
+                        let content_bounding_volume =
+                            BoundingVolume::box_from_bbox(&tile_content_bbox_rw, transformer).unwrap();
+
+                        content = Some(Content {
+                            bounding_volume: if content_add_bv {
+                                Some(content_bounding_volume)
+                            } else {
+                                None
+                            },
+                            uri: format!("t/{}.{}", quadtree.id, tiles_version.extension()),
+                        });
+                    }
                 }
 
-                // Leaf tiles have no children to refine into, so geometricError is 0
-                // per the 3D Tiles spec. This ensures the required monotonically
-                // decreasing hierarchy: tileset > root > internal nodes > leaves.
+                // Leaf geometric error: always 0 — no further refinement possible
                 let geometric_error = 0.0;
 
-                // For 3D Tiles with geographic 3D bounding volumes, GLB content uses input CRS (local coordinate system)
-                // This matches pg2b3dm 2.0.0+ approach - coordinates are in input CRS, not geographic 3D
-                // Root transform handles positioning in tileset.json
+                let refinement = if splat_lod.is_some() {
+                    Some(Refinement::Add)
+                } else {
+                    Some(Refinement::Replace)
+                };
+
                 Tile {
                     id: tile_id,
                     bounding_volume,
                     geometric_error,
                     viewer_request_volume: None,
-                    refine: Some(Refinement::Replace),
+                    refine: refinement,
                     transform: None,
                     content,
                     children: None,
@@ -539,6 +595,7 @@ pub mod cesium3dtiles {
                 extensions_required: Some(vec![ExtensionName::ContentGltf]),
                 extensions: Some(extensions),
                 tiles_version: TilesVersion::V1_1, // from_grid only supports 1.1
+                tile_lod_map: HashMap::new(),
             }
         }
 
@@ -553,6 +610,12 @@ pub mod cesium3dtiles {
 
         pub fn collect_leaves(&self) -> Vec<&Tile> {
             self.root.collect_leaves()
+        }
+
+        /// Collect all tiles that have content (both internal nodes and leaves).
+        /// Used for ADD refinement where internal nodes also have GLB content.
+        pub fn collect_all_with_content(&self) -> Vec<&Tile> {
+            self.root.collect_all_with_content()
         }
 
         #[allow(dead_code)]
@@ -1086,6 +1149,7 @@ pub mod cesium3dtiles {
                             extensions_required: None,
                             extensions: None,
                             tiles_version: Default::default(),
+                            tile_lod_map: HashMap::new(),
                         },
                     ));
                     // Update the current tile to point to the new tileset
@@ -1263,6 +1327,24 @@ pub mod cesium3dtiles {
             leaves
         }
 
+        /// Collect all tiles that have content, including internal nodes.
+        pub fn collect_all_with_content(&self) -> Vec<&Self> {
+            let mut tiles: Vec<&Tile> = Vec::new();
+            self.collect_all_with_content_recurse(&mut tiles);
+            tiles
+        }
+
+        fn collect_all_with_content_recurse<'collect>(&'collect self, tiles: &mut Vec<&'collect Tile>) {
+            if self.content.is_some() {
+                tiles.push(self);
+            }
+            if let Some(ref children) = self.children {
+                for child in children {
+                    child.collect_all_with_content_recurse(tiles);
+                }
+            }
+        }
+
         #[allow(dead_code)]
         fn add_content_from_level(&mut self, levels_up: Option<u16>) {
             let max_level = self.max_level();
@@ -1334,7 +1416,7 @@ pub mod cesium3dtiles {
         }
     }
 
-    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
     pub struct TileId {
         pub(crate) x: usize,
         pub(crate) y: usize,
@@ -1797,7 +1879,7 @@ pub mod cesium3dtiles {
             quadtree.export(&world, None).unwrap();
 
             let _tileset =
-                Tileset::from_quadtree(&quadtree, &world, 16_f64, 200, None, None, true, true, TilesVersion::V1_1);
+                Tileset::from_quadtree(&quadtree, &world, 16_f64, 200, None, None, true, true, TilesVersion::V1_1, None);
 
             // tileset.make_implicit(&world.grid, &quadtree, );
 
@@ -1883,6 +1965,7 @@ pub mod cesium3dtiles {
                 extensions: Some(extensions),
                 root: Default::default(),
                 tiles_version: TilesVersion::V1_1,
+                tile_lod_map: HashMap::new(),
             };
             println!("{}", to_string_pretty(&t).unwrap());
         }
@@ -1909,6 +1992,7 @@ pub mod cesium3dtiles {
                 extensions: Some(extensions),
                 root: Default::default(),
                 tiles_version: TilesVersion::V1_1,
+                tile_lod_map: HashMap::new(),
             };
             println!("{}", to_string_pretty(&t).unwrap());
         }

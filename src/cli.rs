@@ -42,6 +42,7 @@ impl TilesVersion {
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
+#[command(after_help = "LOGGING:\n  tyler-glb logs to stderr (no log file is created by default).\n  Control verbosity with the RUST_LOG environment variable:\n\n    RUST_LOG=debug tyler-glb ...   # verbose\n    RUST_LOG=info  tyler-glb ...   # normal (default)\n    RUST_LOG=error tyler-glb ...   # errors only\n\n  To capture logs to a file, redirect stderr:\n\n    tyler-glb ... 2> tyler.log")]
 #[command(group(
     clap::ArgGroup::new("input")
         .required(true)
@@ -94,6 +95,18 @@ pub struct Cli {
     /// 3D Tiles version: "1.1" (default, GLB with EXT_mesh_features) or "1.0" (B3DM with batch table).
     #[arg(long = "3dtiles-version", value_enum, default_value_t = TilesVersion::V1_1, display_order = 9)]
     pub tiles_version: TilesVersion,
+    /// Include 3DBAG attributes (building year, ground height, roof type, status, etc.)
+    /// in the 3D Tiles 1.1 metadata. Only the subset relevant to urban analytics is forwarded.
+    #[arg(long = "3dtiles-metadata-3dbag", display_order = 10)]
+    pub metadata_3dbag: bool,
+    /// Include roofer reconstruction attributes (roof type, elevation stats, ground height, etc.)
+    /// in the 3D Tiles 1.1 metadata. Only the subset relevant to urban analytics is forwarded.
+    #[arg(long = "3dtiles-metadata-roofer", display_order = 10)]
+    pub metadata_roofer: bool,
+    /// Include buildex reconstruction attributes (footprint correspondence, roof reason, etc.)
+    /// in the 3D Tiles 1.1 metadata.
+    #[arg(long = "3dtiles-metadata-buildex", display_order = 10)]
+    pub metadata_buildex: bool,
     /// Set the geometric error (see 3D Tiles specification) on the parent nodes of leafs. This controls at what
     /// camera distance leaf nodes become visible. Higher values make content visible earlier when zooming in.
     #[arg(long, short = 'e', default_value = "12", display_order = 15)]
@@ -201,6 +214,35 @@ pub struct Cli {
     /// GLB color for GenericCityObject features, hex #RRGGBB (default #FFC0CB).
     #[arg(long = "glb-color-genericcityobject", value_parser = hex_color, display_order = 30)]
     pub glb_color_generic_city_object: Option<String>,
+
+    /// Path to a LAS or LAZ file with per-point RGB colors.
+    /// Used with --splats to generate Gaussian splat primitives in each tile GLB.
+    #[arg(long = "las-rgb", value_parser = existing_canonical_path, display_order = 35)]
+    pub las_rgb: Option<std::path::PathBuf>,
+
+    /// Generate Gaussian splats from the LAS/LAZ point cloud (requires --las-rgb).
+    /// Each tile GLB gets an additional POINTS primitive with the KHR_gaussian_splatting extension.
+    #[arg(long = "splats", requires = "las_rgb", display_order = 36)]
+    pub splats: bool,
+
+    /// Number of LOD tiers for progressive splat loading (1 = no LOD, default 4).
+    /// Higher values create more intermediate levels between overview and full detail.
+    /// Requires --splats.
+    #[arg(long = "splat-lod-tiers", default_value = "4", requires = "splats",
+          value_parser = clap::value_parser!(u8).range(1..=8), display_order = 37)]
+    pub splat_lod_tiers: u8,
+
+    /// Splats-only mode: skip building mesh geometry, output only point cloud splats.
+    /// Requires --splats.
+    #[arg(long = "splats-only", requires = "splats", display_order = 38)]
+    pub splats_only: bool,
+
+    /// Filter out noise-classified points from the LAS/LAZ point cloud
+    /// (ASPRS classification 7 = low noise, 18 = high noise). Defaults to true.
+    /// Pass --de-noising false to include all points regardless of classification.
+    #[arg(long = "de-noising", default_value = "true", requires = "splats",
+          value_parser = clap::value_parser!(bool), display_order = 39)]
+    pub de_noising: bool,
 }
 
 use crate::parser::CityObjectType;
@@ -238,6 +280,49 @@ impl Cli {
         config.apply_cli_color_overrides(&cli_colors);
 
         Ok(config)
+    }
+
+    /// Build the set of CityObject attribute names to forward into 3D Tiles metadata,
+    /// based on the `--3dtiles-metadata-3dbag` and `--3dtiles-metadata-roofer` flags.
+    /// Returns `None` when no attribute forwarding is requested.
+    pub fn attribute_whitelist(&self) -> Option<std::collections::HashSet<&'static str>> {
+        if !self.metadata_3dbag && !self.metadata_roofer && !self.metadata_buildex {
+            return None;
+        }
+        let mut set = std::collections::HashSet::new();
+        if self.metadata_3dbag {
+            set.extend([
+                "oorspronkelijk_bouwjaar",
+                "h_maaiveld",
+                "dak_type",
+                "status",
+                "kas_warenhuis",
+                "ondergronds_type",
+            ]);
+        }
+        if self.metadata_roofer {
+            set.extend([
+                "rf_roof_type",
+                "rf_roof_n_planes",
+                "rf_roof_elevation_50p",
+                "rf_roof_elevation_70p",
+                "rf_roof_elevation_min",
+                "rf_roof_elevation_max",
+                "rf_h_ground",
+                "rf_is_glass_roof",
+                "rf_pc_year",
+            ]);
+        }
+        if self.metadata_buildex {
+            set.extend([
+                "footprint_iou",
+                "roof_reason",
+                "inferred_roof_class",
+                "dz_std",
+                "n_points",
+            ]);
+        }
+        Some(set)
     }
 }
 

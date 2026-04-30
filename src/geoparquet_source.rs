@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use arrow::array::{Array, BinaryArray, LargeBinaryArray, StringArray};
@@ -462,11 +462,13 @@ fn build_tree_feature_in_memory(
     let geometry = Geometry::MultiSurface {
         lod: Some("2".to_string()),
         boundaries,
+        semantics: None,
     };
 
     let city_object = CityObject {
         cotype: city_object_type,
         geometry: Some(vec![geometry]),
+        attributes: None,
     };
 
     let mut cityobjects = HashMap::with_capacity(1);
@@ -596,33 +598,28 @@ pub fn load_geoparquet_to_memory(
 
     Ok(features)
 }
+
+/// Load a standalone GeoParquet file into memory without writing any files.
 ///
-/// Reads the GeoParquet, computes the data's bounding box to derive a CityJSON
-/// transform, writes feature files and a `metadata.city.json`.
-///
-/// Returns `(metadata_path, features_dir)`.
-pub fn process_geoparquet_standalone(
+/// Unlike [`load_geoparquet_to_memory`], this does not require an external reference
+/// transform — it derives one from the data's bounding box (two-pass: bbox, then build).
+/// Returns `(transform, reference_system, features)` suitable for [`World::from_features`].
+pub fn load_geoparquet_standalone_to_memory(
     parquet_path: &Path,
-    output_dir: &Path,
     city_object_type: &str,
     id_column: Option<&str>,
-) -> Result<(PathBuf, PathBuf)> {
-    use crate::parser::Transform;
-    use crate::transform_align::quantize_vertex;
-
+) -> Result<(Transform, String, Vec<CityJSONFeatureVertices>)> {
     if !parquet_path.exists() {
-        bail!(
-            "GeoParquet file does not exist: {}",
-            parquet_path.display()
-        );
+        bail!("GeoParquet file does not exist: {}", parquet_path.display());
     }
 
-    let file = fs::File::open(parquet_path)
+    // ── Pass 1: scan all rows to compute bounding box ──
+    let file1 = fs::File::open(parquet_path)
         .with_context(|| format!("opening {}", parquet_path.display()))?;
-    let builder =
-        ParquetRecordBatchReaderBuilder::try_new(file).context("building Parquet reader")?;
+    let builder1 = ParquetRecordBatchReaderBuilder::try_new(file1)
+        .context("building Parquet reader (pass 1)")?;
 
-    let kv_metadata = builder
+    let kv_metadata = builder1
         .metadata()
         .file_metadata()
         .key_value_metadata()
@@ -636,93 +633,50 @@ pub fn process_geoparquet_standalone(
     let src_epsg = extract_epsg_from_geo_metadata(geo_meta)?;
     let geom_col = geometry_column_name(geo_meta)?;
     info!(
-        "Standalone GeoParquet: EPSG:{}, geometry column: '{}'",
+        "Standalone GeoParquet (in-memory): EPSG:{}, geometry column: '{}'",
         src_epsg, geom_col
     );
 
-    let schema = builder.schema().clone();
-    let reader = builder.build().context("building Parquet batch reader")?;
-
-    let geom_idx = schema
+    let total_rows = builder1.metadata().file_metadata().num_rows() as usize;
+    let schema1 = builder1.schema().clone();
+    let reader1 = builder1.build().context("building Parquet batch reader (pass 1)")?;
+    let geom_idx = schema1
         .index_of(&geom_col)
         .with_context(|| format!("geometry column '{geom_col}' not found in schema"))?;
-    let id_col_idx = id_column.and_then(|name| schema.index_of(name).ok());
-    let attr_indices: Vec<(usize, String)> = schema
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != geom_idx)
-        .map(|(i, f)| (i, f.name().clone()))
-        .collect();
 
-    // First pass: parse all features and compute bounding box.
-    let mut features: Vec<GeoFeature> = Vec::new();
     let mut bbox_min = [f64::INFINITY; 3];
     let mut bbox_max = [f64::NEG_INFINITY; 3];
-    let mut row_idx: usize = 0;
+    let mut row_count: usize = 0;
 
-    for batch_result in reader {
-        let batch = batch_result.context("reading Parquet record batch")?;
+    for batch_result in reader1 {
+        let batch = batch_result.context("reading Parquet record batch (pass 1)")?;
         let geom_array = batch.column(geom_idx);
-        let num_rows = batch.num_rows();
-
-        for i in 0..num_rows {
+        for i in 0..batch.num_rows() {
             let wkb_bytes = extract_binary(geom_array, i)?;
             if wkb_bytes.is_empty() {
-                warn!("Row {row_idx}: empty geometry, skipping");
-                row_idx += 1;
+                row_count += 1;
                 continue;
             }
-            let polygons = match parse_wkb_3d(wkb_bytes) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Row {row_idx}: failed to parse WKB: {e}, skipping");
-                    row_idx += 1;
-                    continue;
-                }
-            };
-            // Update bounding box.
-            for polygon in &polygons {
-                for ring in polygon {
-                    for v in ring {
-                        bbox_min[0] = bbox_min[0].min(v[0]);
-                        bbox_min[1] = bbox_min[1].min(v[1]);
-                        bbox_min[2] = bbox_min[2].min(v[2]);
-                        bbox_max[0] = bbox_max[0].max(v[0]);
-                        bbox_max[1] = bbox_max[1].max(v[1]);
-                        bbox_max[2] = bbox_max[2].max(v[2]);
+            if let Ok(polygons) = parse_wkb_3d(wkb_bytes) {
+                for polygon in &polygons {
+                    for ring in polygon {
+                        for v in ring {
+                            bbox_min[0] = bbox_min[0].min(v[0]);
+                            bbox_min[1] = bbox_min[1].min(v[1]);
+                            bbox_min[2] = bbox_min[2].min(v[2]);
+                            bbox_max[0] = bbox_max[0].max(v[0]);
+                            bbox_max[1] = bbox_max[1].max(v[1]);
+                            bbox_max[2] = bbox_max[2].max(v[2]);
+                        }
                     }
                 }
             }
-            let id = if let Some(col_idx) = id_col_idx {
-                extract_string(batch.column(col_idx), i)
-                    .unwrap_or_else(|| format!("tree-{row_idx:05}"))
-            } else {
-                format!("tree-{row_idx:05}")
-            };
-            let mut attributes = Map::new();
-            for (col_idx, col_name) in &attr_indices {
-                if id_col_idx == Some(*col_idx) {
-                    continue;
-                }
-                if let Some(val) = extract_value(batch.column(*col_idx), i) {
-                    attributes.insert(col_name.clone(), val);
-                }
-            }
-            features.push(GeoFeature {
-                id,
-                polygons,
-                attributes,
-            });
-            row_idx += 1;
+            row_count += 1;
         }
     }
 
-    if features.is_empty() {
-        bail!(
-            "No valid features found in {}",
-            parquet_path.display()
-        );
+    if row_count == 0 || bbox_min[0] == f64::INFINITY {
+        bail!("No valid features found in {}", parquet_path.display());
     }
 
     // Derive transform: millimetre precision, translate to bbox min.
@@ -730,91 +684,70 @@ pub fn process_geoparquet_standalone(
         scale: [0.001, 0.001, 0.001],
         translate: [bbox_min[0].floor(), bbox_min[1].floor(), bbox_min[2].floor()],
     };
-
-    let features_dir = output_dir.join("features");
-    if features_dir.exists() {
-        fs::remove_dir_all(&features_dir)?;
-    }
-    fs::create_dir_all(&features_dir)?;
-
-    // Second pass: write feature files using the computed transform.
-    for feature in &features {
-        let mut vertices_qc: Vec<[i64; 3]> = Vec::new();
-        let mut boundaries: Vec<Value> = Vec::new();
-
-        for polygon in &feature.polygons {
-            for ring in polygon {
-                let mut ring_indices: Vec<Value> = Vec::with_capacity(ring.len());
-                for vertex in ring {
-                    let qc = quantize_vertex(vertex, &transform);
-                    let idx = vertices_qc.len();
-                    vertices_qc.push(qc);
-                    ring_indices.push(json!(idx));
-                }
-                boundaries.push(json!([ring_indices]));
-            }
-        }
-
-        let z_values: Vec<f64> = vertices_qc
-            .iter()
-            .map(|v| v[2] as f64 * transform.scale[2] + transform.translate[2])
-            .collect();
-        let height = z_values.iter().cloned().reduce(f64::max).unwrap_or(0.0)
-            - z_values.iter().cloned().reduce(f64::min).unwrap_or(0.0);
-
-        let mut attributes = feature.attributes.clone();
-        attributes.insert("height".to_string(), json!(height));
-
-        let city_object = json!({
-            "type": city_object_type,
-            "attributes": attributes,
-            "geometry": [{
-                "type": "MultiSurface",
-                "lod": "2",
-                "boundaries": boundaries,
-            }],
-        });
-        let cityjson_feature = json!({
-            "type": "CityJSONFeature",
-            "id": feature.id,
-            "CityObjects": { &feature.id: city_object },
-            "vertices": vertices_qc,
-        });
-
-        let feature_path = features_dir.join(format!("{}.jsonl", feature.id));
-        let mut f = fs::File::create(&feature_path)
-            .with_context(|| format!("creating {}", feature_path.display()))?;
-        let line = serde_json::to_string(&cityjson_feature).context("serializing feature")?;
-        writeln!(f, "{line}").context("writing feature file")?;
-    }
-
-    // Write metadata.city.json
     let ref_system = format!("https://www.opengis.net/def/crs/EPSG/0/{src_epsg}");
-    let metadata_value = json!({
-        "type": "CityJSON",
-        "version": "2.0",
-        "transform": {
-            "scale": transform.scale,
-            "translate": transform.translate,
-        },
-        "metadata": {
-            "referenceSystem": ref_system,
-        },
-        "CityObjects": {},
-        "vertices": [],
-    });
-    let metadata_path = output_dir.join("metadata.city.json");
-    let pretty = serde_json::to_string_pretty(&metadata_value)?;
-    fs::write(&metadata_path, &pretty)?;
+
+    // ── Pass 2: build features using the derived transform ──
+    let cotype: CityObjectType = serde_json::from_value(serde_json::Value::String(
+        city_object_type.to_string(),
+    ))
+    .with_context(|| format!("unknown CityObjectType '{city_object_type}'"))?;
+
+    // No CRS reprojection needed — source and reference are the same EPSG.
+    let aligner = TransformAligner::new(src_epsg, src_epsg, transform.clone())?;
+
+    let file2 = fs::File::open(parquet_path)
+        .with_context(|| format!("re-opening {}", parquet_path.display()))?;
+    let builder2 = ParquetRecordBatchReaderBuilder::try_new(file2)
+        .context("building Parquet reader (pass 2)")?;
+    let schema2 = builder2.schema().clone();
+    let reader2 = builder2.build().context("building Parquet batch reader (pass 2)")?;
+    let geom_idx2 = schema2.index_of(&geom_col).unwrap_or(geom_idx);
+    let id_col_idx = id_column.and_then(|name| schema2.index_of(name).ok());
+
+    let mut features: Vec<CityJSONFeatureVertices> = Vec::with_capacity(total_rows);
+    let mut row_idx: usize = 0;
+
+    for batch_result in reader2 {
+        let batch = batch_result.context("reading Parquet record batch (pass 2)")?;
+        let geom_array = batch.column(geom_idx2);
+        for i in 0..batch.num_rows() {
+            let wkb_bytes = extract_binary(geom_array, i)?;
+            if wkb_bytes.is_empty() {
+                row_idx += 1;
+                continue;
+            }
+            let polygons = match parse_wkb_3d(wkb_bytes) {
+                Ok(p) => p,
+                Err(_) => {
+                    row_idx += 1;
+                    continue;
+                }
+            };
+            let id = if let Some(col_idx) = id_col_idx {
+                extract_string(batch.column(col_idx), i)
+                    .unwrap_or_else(|| format!("tree-{row_idx:05}"))
+            } else {
+                format!("tree-{row_idx:05}")
+            };
+            let geo_feature = GeoFeature {
+                id,
+                polygons,
+                attributes: Map::new(),
+            };
+            let cf = build_tree_feature_in_memory(&geo_feature, &aligner, cotype)?;
+            features.push(cf);
+            row_idx += 1;
+        }
+    }
 
     info!(
-        "Wrote {} {} features from {} (standalone)",
+        "Loaded {} {} features into memory (standalone) from {}",
         features.len(),
         city_object_type,
         parquet_path.display()
     );
 
-    Ok((metadata_path, features_dir))
+    Ok((transform, ref_system, features))
 }
 
 /// Check if a tree centroid overlaps any building bounding box in the features directory.

@@ -50,6 +50,10 @@ arrow = { version = "53", features = ["prettyprint"] }
 geozero = { version = "0.14", features = ["with-wkb"] }
 # Temp file for embedded proj.db
 tempfile = "3"
+laz = "0.9"
+byteorder = "1"
+las = { version = "0.9", features = ["laz"] }
+ahash = "0.8.12"
 
 [build-dependencies]
 flate2 = "1"

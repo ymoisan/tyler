@@ -1,24 +1,96 @@
-# tyler
+# tyler-glb
+
+**tyler-glb** is a self-contained static binary that creates [3D Tiles](https://docs.ogc.org/cs/22-025r4/22-025r4.html) from CityJSONL buildings and/or GeoParquet trees, with optional Gaussian splat point clouds from LAS/LAZ/COPC files.
+
+## Features
+
+- **3D Tiles 1.1** (GLB with [EXT_mesh_features](https://github.com/CesiumGS/glTF/tree/3d-tiles-next/extensions/2.0/Vendor/EXT_mesh_features) + [EXT_structural_metadata](https://github.com/CesiumGS/glTF/tree/3d-tiles-next/extensions/2.0/Vendor/EXT_structural_metadata)) and **3D Tiles 1.0** (B3DM with batch table)
+- CityJSONL building input (single `.city.jsonl` file with embedded CRS/transform metadata)
+- GeoParquet tree input (SolitaryVegetationObject 3D polygons)
+- Gaussian splats from LAS/LAZ/COPC point clouds ([KHR_gaussian_splatting](https://github.com/KhronosGroup/glTF/pull/2377) extension)
+- Multi-tier progressive splat LOD
+- Noise filtering (ASPRS classification 7 = low noise, 18 = high noise), on by default
+- PBR material configuration via TOML file or per-type `--glb-color-*` CLI flags
+- Mesh compression: [KHR_mesh_quantization](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_mesh_quantization) + [EXT_meshopt_compression](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_meshopt_compression)
+- Implicit or explicit tiling
+- Per-feature metadata attribute sets: 3DBAG, roofer, buildex
+
+## Building
+
+```bash
+docker build --no-cache --output type=local,dest=. -f docker/tyler-static.dockerfile .
+```
+
+This produces a fully static musl binary `./tyler-glb` with embedded `proj.db`. It runs on any x86_64 Linux system (bare metal, VM, HPC node, WSL2) with no runtime dependencies — just copy and execute.
+
+## Usage
+
+```
+tyler-glb [OPTIONS] --output <OUTPUT> <--buildings <BUILDINGS>|--trees <TREES>>
+```
+
+### Examples
+
+**Buildings only:**
+
+```bash
+tyler-glb \
+  --buildings tile.city.jsonl \
+  --output ./output-3dtiles
+```
+
+**Buildings + Gaussian splats from COPC:**
+
+```bash
+tyler-glb \
+  --buildings tile.city.jsonl \
+  --las-rgb pointcloud.copc.laz \
+  --splats \
+  --output ./output-splats
+```
+
+**Splats only (no building mesh geometry):**
+
+```bash
+tyler-glb \
+  --trees footprints.parquet \
+  --las-rgb pointcloud.copc.laz \
+  --splats --splats-only \
+  --output ./output-splats-only
+```
+
+**Trees (GeoParquet) + buildings:**
+
+```bash
+tyler-glb \
+  --buildings tile.city.jsonl \
+  --trees trees.parquet \
+  --output ./output-combined
+```
+
+Run `tyler-glb --help` for the full option reference.
+
+## Logging
+
+tyler-glb logs to stderr. Control verbosity with `RUST_LOG`:
+
+```bash
+RUST_LOG=debug tyler-glb ...   # verbose
+RUST_LOG=info  tyler-glb ...   # normal (default)
+RUST_LOG=error tyler-glb ...   # errors only
+```
+
+To capture logs: `tyler-glb ... 2> tyler.log`
+
+---
+
+# tyler (legacy)
 
 <p align="center">
   <img src="https://github.com/3DGI/tyler/blob/master/tyler.png" />
 </p>
 
-*tyler* creates tiles from 3D city objects.
-
-As input, *tyler* takes [CityJSON Features](https://www.cityjson.org/specs/1.1.3/#text-sequences-and-streaming-with-cityjsonfeature), where each feature is stored in a separate file.
-
-As output, *tyler* can create:
-
-- [3D Tiles v1.1](https://docs.ogc.org/cs/22-025r4/22-025r4.html)
-
-Details of the 3D Tiles output:
-
-- The tileset content if binary glTF (.glb).
-- The glTF assets contain feature metadata (per CityObject), using the [EXT_mesh_features](https://github.com/CesiumGS/glTF/tree/3d-tiles-next/extensions/2.0/Vendor/EXT_mesh_features) and [EXT_structural_metadata](https://github.com/CesiumGS/glTF/tree/3d-tiles-next/extensions/2.0/Vendor/EXT_structural_metadata) extensions.
-- The features are colored to default values, and the colors can by set per CityObject type.
-- The glTF files are compressed, using the [KHR_mesh_quantization](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_mesh_quantization) and [EXT_meshopt_compression](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_meshopt_compression) extensions.
-- Implicit tiling is supported (optional).
+The legacy *tyler* creates tiles from 3D city objects using the [geoflow-bundle](https://github.com/geoflow3d/geoflow-bundle) for CityJSONFeatures-to-glTF conversion.
 
 Additional information about the internals of *tyler* you will find in the [design document](https://github.com/3DGI/tyler/blob/master/docs/design_document.md).
 
@@ -97,8 +169,10 @@ Use `--help` to see the help menu.
 tyler --help
 ```
 
-Execution logs are outputted to the console.
-You can control the loging level (`debug`, `info`, `error`) by setting the `RUST_LOG` environment variable.
+Execution logs are written to **stderr** (no log file is created by default).
+You can control the logging level (`debug`, `info`, `error`) by setting the `RUST_LOG` environment variable.
+To capture logs to a file, redirect stderr: `tyler-glb ... 2> tyler.log`.
+
 For instance turn on the debug messages.
 
 ```shell
