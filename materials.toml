@@ -1,0 +1,70 @@
+# PBR material configuration for tyler 3D Tiles generation.
+#
+# Section names must match CityObjectType variant names (PascalCase).
+# All fields are optional; missing fields inherit from [defaults], then built-ins.
+#
+# Fields:
+#   base_color       - hex color "#RRGGBB" (alpha is always 1.0)
+#   metallic_factor  - 0.0 (dielectric) to 1.0 (metal)
+#   roughness_factor - 0.0 (smooth/glossy) to 1.0 (rough/matte)
+#
+# Usage:
+#   tyler-glb --buildings data.jsonl -o output/ --material-config materials.toml
+
+[defaults]
+base_color = "#FFC0CB"
+metallic_factor = 0.0
+roughness_factor = 0.85
+
+[Building]
+base_color = "#C8B496"
+
+[BuildingPart]
+base_color = "#C8B496"
+
+[BuildingInstallation]
+base_color = "#A09080"
+
+[SolitaryVegetationObject]
+base_color = "#2D5A1E"
+roughness_factor = 1.0
+
+[PlantCover]
+base_color = "#3A7A2A"
+roughness_factor = 1.0
+
+[TINRelief]
+base_color = "#8B7355"
+roughness_factor = 0.95
+
+[Road]
+base_color = "#808080"
+roughness_factor = 0.95
+
+[Railway]
+base_color = "#6E6E6E"
+roughness_factor = 0.9
+
+[WaterBody]
+base_color = "#4488BB"
+metallic_factor = 0.1
+roughness_factor = 0.3
+
+[LandUse]
+base_color = "#6B8E23"
+
+[Bridge]
+base_color = "#A0A0A0"
+
+[BridgePart]
+base_color = "#A0A0A0"
+
+[Tunnel]
+base_color = "#606060"
+roughness_factor = 0.9
+
+[CityFurniture]
+base_color = "#C0C0C0"
+
+[GenericCityObject]
+base_color = "#CCCCCC"
