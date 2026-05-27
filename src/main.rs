@@ -640,6 +640,9 @@ fn read_tile_feature_models(
             parser::FeatureReference::CjIndexRef(feature) => {
                 cjindex_refs.push(feature.clone());
             }
+            parser::FeatureReference::ExtraInline(idx) => {
+                models.push(world.extra_models[*idx].clone());
+            }
             parser::FeatureReference::CjIndexId(_) => {
                 let city_index = world.input_source.open_index()?;
                 for fid in feature_ids {
@@ -657,10 +660,13 @@ fn read_tile_feature_models(
             }
         }
     }
-    models = parser::World::read_cjindex_features_thread_local(&world.input_source, &cjindex_refs)?;
+    let cjindex_models =
+        parser::World::read_cjindex_features_thread_local(&world.input_source, &cjindex_refs)?;
+    let cjindex_count = cjindex_models.len();
+    models.extend(cjindex_models);
     debug!(
         "Read {} tile features from cjindex in {:?}",
-        models.len(),
+        cjindex_count,
         started.elapsed()
     );
 
@@ -711,6 +717,7 @@ fn feature_reference_public_id(reference: &parser::FeatureReference) -> String {
     match reference {
         parser::FeatureReference::CjIndexRef(feature) => feature.feature_id.clone(),
         parser::FeatureReference::CjIndexId(feature_id) => feature_id.clone(),
+        parser::FeatureReference::ExtraInline(idx) => format!("__extra_inline_{idx}"),
     }
 }
 
@@ -739,6 +746,11 @@ fn feature_reference_precedes(
         (parser::FeatureReference::CjIndexId(lhs), parser::FeatureReference::CjIndexId(rhs)) => {
             lhs < rhs
         }
+        (parser::FeatureReference::ExtraInline(lhs), parser::FeatureReference::ExtraInline(rhs)) => {
+            lhs < rhs
+        }
+        (parser::FeatureReference::ExtraInline(_), _) => false,
+        (_, parser::FeatureReference::ExtraInline(_)) => true,
     }
 }
 

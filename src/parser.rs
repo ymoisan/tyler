@@ -48,6 +48,11 @@ pub struct World {
     pub grid: crate::spatial_structs::SquareGrid,
     pub path_metadata: PathBuf,
     pub input_source: InputSource,
+    /// Synthetic features carried in-memory (e.g. trees loaded from GeoParquet).
+    /// Referenced via [`FeatureReference::ExtraInline`]. Not persisted to bincode
+    /// dumps because `cityjson_lib::CityModel` is not serde-serializable.
+    #[serde(skip)]
+    pub extra_models: Vec<cityjson_lib::CityModel>,
 }
 
 struct FeatureInGridCells {
@@ -285,6 +290,7 @@ impl World {
             cityobject_types,
             path_metadata,
             input_source,
+            extra_models: Vec::new(),
         })
     }
 
@@ -691,6 +697,35 @@ impl World {
         }
     }
 
+    /// Integrate in-memory CityModel features (e.g. trees loaded from
+    /// GeoParquet) into the existing grid and feature set. Each model is
+    /// indexed exactly like cjindex features, but referenced via
+    /// [`FeatureReference::ExtraInline`] into [`World::extra_models`].
+    pub fn add_inline_features(
+        &mut self,
+        models: Vec<cityjson_lib::CityModel>,
+    ) -> Result<usize, std::io::Error> {
+        let grid_layout = self.grid.layout();
+        let cityobject_types = self.cityobject_types.as_ref();
+        let mut added = 0;
+        for model in models {
+            let idx = self.extra_models.len();
+            self.extra_models.push(model);
+            let model_ref = &self.extra_models[idx];
+            let fic = Self::index_feature_model(
+                &grid_layout,
+                cityobject_types,
+                FeatureReference::ExtraInline(idx),
+                model_ref,
+            )?;
+            if let Some(fic) = fic {
+                integrate_feature_in_cells(&mut self.features, &mut self.grid, fic);
+                added += 1;
+            }
+        }
+        Ok(added)
+    }
+
     pub fn export_grid(
         &self,
         export_features: bool,
@@ -793,6 +828,10 @@ fn default_feature_needs_type_filter() -> bool {
 pub enum FeatureReference {
     CjIndexRef(cityjson_index::IndexedFeatureRef),
     CjIndexId(String),
+    /// Index into [`World::extra_models`] — used for synthetic features that
+    /// live in memory rather than in the cjindex sidecar (e.g. trees loaded
+    /// from a GeoParquet input).
+    ExtraInline(usize),
 }
 
 impl Default for FeatureReference {
