@@ -21,6 +21,6 @@ libc = "0.2.119"
 log = "0.4"
 meshopt = "0.6.2"
 num-traits = "0.2.14"
-proj-sys = { version = "0.23.1", features = ["network"] }
+proj-sys = { version = "0.27", features = ["bundled_proj"] }
 serde_json = "1.0"
 thiserror = "1.0.30"
