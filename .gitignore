@@ -22,3 +22,9 @@
 *.bincode
 *.log
 /docs/plans/
+
+# Certificates (corporate CA chains, etc. — never commit)
+*.pem
+*.crt
+*.cer
+/certs/
