@@ -3245,6 +3245,7 @@ dependencies = [
  "byteorder",
  "cityjson-convert",
  "cityjson-index",
+ "cityjson-json",
  "cityjson-lib",
  "clap",
  "env_logger 0.10.2",

@@ -20,6 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 cityjson-lib = { git = "https://github.com/3DGI/cityjson", branch = "main", features = ["json"] }
+cityjson-json = { git = "https://github.com/3DGI/cityjson", branch = "main" }
 cityjson-index = { git = "https://github.com/3DGI/cityjson", branch = "main" }
 cityjson-convert = { path = "cityjson-convert" }
 log = "0.4.17"

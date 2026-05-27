@@ -63,6 +63,7 @@ mod formats;
 mod parser;
 mod proj;
 mod spatial_structs;
+mod trees;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
