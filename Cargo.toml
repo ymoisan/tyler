@@ -30,7 +30,7 @@ serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.91"
 serde_repr = "0.1.10"
 rayon = "1.6.1"
-proj-sys = { version = "0.23.1", features = ["network"] }
+proj-sys = { version = "0.23.1", features = ["bundled_proj"] }
 num-traits = "0.2.14"
 libc = "0.2.119"
 thiserror = "1.0.30"
