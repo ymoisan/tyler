@@ -230,6 +230,24 @@ pub struct Cli {
     /// Color for GenericCityObject features specified as a hex rgb-color value, eg. #FF0000 is red.
     #[arg(long, value_parser = hex_color)]
     pub color_generic_city_object: Option<String>,
+
+    /// Path to a trees GeoParquet input (point cloud with per-tree attributes).
+    /// When set, trees are merged into the export pipeline as SolitaryVegetationObject features.
+    #[arg(long, value_parser = existing_canonical_path)]
+    pub trees: Option<PathBuf>,
+
+    /// Path to a splats input (COPC/LAZ point cloud). When set, Gaussian-splat
+    /// content is emitted using the KHR_gaussian_splatting glTF extension.
+    #[arg(long, value_parser = existing_canonical_path)]
+    pub splats: Option<PathBuf>,
+
+    /// Emit only splat content (no building/feature geometry). Requires --splats.
+    #[arg(long)]
+    pub splats_only: bool,
+
+    /// Use the LAS RGB attributes (when present) for splat/point color instead of a flat default.
+    #[arg(long)]
+    pub las_rgb: bool,
     // The number of levels to export as content from the quadtree.
     // Counted from the leaves.
     // #[arg(long, default_value = "0")]
