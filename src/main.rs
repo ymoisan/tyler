@@ -628,6 +628,35 @@ fn tiles_results_successful_content_tile_ids(
         .collect()
 }
 
+fn extract_cityjson_transform(
+    bytes: &[u8],
+) -> Result<trees::CityJsonTransform, Box<dyn std::error::Error>> {
+    let v: serde_json::Value = serde_json::from_slice(bytes)?;
+    let t = v
+        .get("transform")
+        .ok_or("CityJSON metadata missing `transform`")?;
+    let parse3 = |name: &str| -> Result<[f64; 3], Box<dyn std::error::Error>> {
+        let arr = t
+            .get(name)
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("CityJSON transform.{name} missing or not an array"))?;
+        if arr.len() != 3 {
+            return Err(format!("CityJSON transform.{name} must have 3 elements").into());
+        }
+        let mut out = [0.0; 3];
+        for (i, e) in arr.iter().enumerate() {
+            out[i] = e
+                .as_f64()
+                .ok_or_else(|| format!("CityJSON transform.{name}[{i}] not a number"))?;
+        }
+        Ok(out)
+    };
+    Ok(trees::CityJsonTransform {
+        scale: parse3("scale")?,
+        translate: parse3("translate")?,
+    })
+}
+
 fn read_tile_feature_models(
     world: &parser::World,
     feature_ids: &[usize],
@@ -1329,6 +1358,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli.grid_maxz,
             )?;
             world.index_with_grid()?; // todo input: in general, build a line index
+            if let Some(trees_path) = cli.trees.as_ref() {
+                let transform = extract_cityjson_transform(&world.feature_base_document)?;
+                info!("Loading trees from {trees_path:?}");
+                let trees = trees::load_trees_as_models(
+                    trees_path,
+                    &transform,
+                    "SolitaryVegetationObject",
+                    Some("id"),
+                )?;
+                let n = trees.len();
+                let added = world.add_inline_features(trees)?;
+                info!("Added {added}/{n} tree features from {trees_path:?}");
+            }
             if let Some(grid_path) = cli.debug_load_grid.as_ref() {
                 let features_path = grid_path.parent().map(|parent| parent.join("features.tsv"));
                 world.grid = spatial_structs::SquareGrid::from_debug_tsv(
