@@ -261,6 +261,22 @@ fn build_object_attribute_types(
     cli: &crate::cli::Cli,
 ) -> Result<BTreeMap<String, ObjectAttributeType>, Box<dyn std::error::Error>> {
     let mut attribute_types = BTreeMap::new();
+
+    for (name, value_type) in cli.metadata_preset_attributes() {
+        let parsed = match value_type {
+            "string" => ObjectAttributeType::String,
+            "bool" => ObjectAttributeType::Bool,
+            "int" => ObjectAttributeType::Int,
+            "float" => ObjectAttributeType::Float,
+            other => {
+                return Err(
+                    format!("invalid preset attribute type {other:?} for {name:?}").into(),
+                );
+            }
+        };
+        attribute_types.insert(name.to_string(), parsed);
+    }
+
     let Some(mappings) = cli.object_attributes.as_ref() else {
         return Ok(attribute_types);
     };

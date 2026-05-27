@@ -107,6 +107,18 @@ pub struct Cli {
     /// This is useful for 3DBAG/roofer-style parent-child models where attributes live on the parent.
     #[arg(long)]
     pub include_parent_attributes: bool,
+    /// Include curated 3DBAG attributes (building year, ground height, roof type, status, ...)
+    /// in the 3D Tiles 1.1 metadata. Combinable with --3dtiles-metadata-roofer / -buildex.
+    #[arg(long = "3dtiles-metadata-3dbag")]
+    pub metadata_3dbag: bool,
+    /// Include curated roofer reconstruction attributes (roof type, elevation stats, ...)
+    /// in the 3D Tiles 1.1 metadata.
+    #[arg(long = "3dtiles-metadata-roofer")]
+    pub metadata_roofer: bool,
+    /// Include curated buildex attributes (footprint correspondence, roof reason, ...)
+    /// in the 3D Tiles 1.1 metadata.
+    #[arg(long = "3dtiles-metadata-buildex")]
+    pub metadata_buildex: bool,
     /// Compute smooth vertex normals.
     #[arg(long)]
     pub smooth_normals: bool,
@@ -270,6 +282,48 @@ pub struct Cli {
     // /// installed.
     // #[arg(long, value_parser = existing_path)]
     // pub exe_python: Option<PathBuf>,
+}
+
+impl Cli {
+    /// Returns the (attribute_name, type_token) pairs implied by the enabled
+    /// 3D Tiles metadata preset flags. Type tokens use the same vocabulary as
+    /// `--object-attributes` (`string`, `bool`, `int`, `float`).
+    pub fn metadata_preset_attributes(&self) -> Vec<(&'static str, &'static str)> {
+        let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+        if self.metadata_3dbag {
+            out.extend([
+                ("oorspronkelijk_bouwjaar", "int"),
+                ("h_maaiveld", "float"),
+                ("dak_type", "string"),
+                ("status", "string"),
+                ("kas_warenhuis", "string"),
+                ("ondergronds_type", "string"),
+            ]);
+        }
+        if self.metadata_roofer {
+            out.extend([
+                ("rf_roof_type", "string"),
+                ("rf_roof_n_planes", "int"),
+                ("rf_roof_elevation_50p", "float"),
+                ("rf_roof_elevation_70p", "float"),
+                ("rf_roof_elevation_min", "float"),
+                ("rf_roof_elevation_max", "float"),
+                ("rf_h_ground", "float"),
+                ("rf_is_glass_roof", "bool"),
+                ("rf_pc_year", "int"),
+            ]);
+        }
+        if self.metadata_buildex {
+            out.extend([
+                ("footprint_iou", "float"),
+                ("roof_reason", "string"),
+                ("inferred_roof_class", "string"),
+                ("dz_std", "float"),
+                ("n_points", "int"),
+            ]);
+        }
+        out
+    }
 }
 
 fn existing_canonical_path(s: &str) -> Result<PathBuf, String> {
