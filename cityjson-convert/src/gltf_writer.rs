@@ -2669,6 +2669,37 @@ impl BufferBuilder {
         feature_ids: &[u32],
         meshopt_compression: bool,
     ) -> Result<json::Index<json::Accessor>> {
+        if !meshopt_compression {
+            // QGIS-strict path: emit feature IDs as u32 with no byteStride.
+            // The narrowing-to-u8/u16 path produced byteStride=2 which QGIS
+            // rejects with "byteStride must be multiple of 4".
+            let count = feature_ids.len();
+            let max_value = feature_ids.iter().copied().max().unwrap_or(0);
+            while self.bytes.len() % 4 != 0 {
+                self.bytes.push(0);
+            }
+            let view = self.push_buffer_view(
+                feature_ids,
+                None,
+                json::buffer::Target::ArrayBuffer,
+            );
+            return Ok(self.push_accessor(json::Accessor {
+                buffer_view: Some(view),
+                byte_offset: Some(json::validation::USize64(0)),
+                count: json::validation::USize64(count as u64),
+                component_type: json::validation::Checked::Valid(
+                    json::accessor::GenericComponentType(json::accessor::ComponentType::U32),
+                ),
+                normalized: false,
+                min: Some(json::Value::from(vec![0u32])),
+                max: Some(json::Value::from(vec![max_value])),
+                type_: json::validation::Checked::Valid(json::accessor::Type::Scalar),
+                extensions: None,
+                extras: Option::default(),
+                name: None,
+                sparse: None,
+            }));
+        }
         let feature_ids = FeatureIdBuffer::from_feature_ids(feature_ids)?;
         let view = match &feature_ids {
             FeatureIdBuffer::U8(feature_id_values) => {

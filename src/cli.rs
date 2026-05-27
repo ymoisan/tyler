@@ -248,6 +248,16 @@ pub struct Cli {
     /// Use the LAS RGB attributes (when present) for splat/point color instead of a flat default.
     #[arg(long)]
     pub las_rgb: bool,
+
+    /// Enable EXT_meshopt_compression in emitted glTF (default off — QGIS rejects
+    /// meshopt fallback buffers). Recommended only for Cesium-only deployments.
+    #[arg(long)]
+    pub meshopt_compression: bool,
+
+    /// Enable KHR_mesh_quantization in emitted glTF (default off — QGIS rejects
+    /// 16-bit attribute strides). Recommended only for Cesium-only deployments.
+    #[arg(long)]
+    pub quantize_geometry: bool,
     // The number of levels to export as content from the quadtree.
     // Counted from the leaves.
     // #[arg(long, default_value = "0")]

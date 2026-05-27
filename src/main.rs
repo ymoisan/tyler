@@ -186,8 +186,8 @@ fn build_glb_export_options(
         clip_bbox,
         clip_geographic_region: None,
         smooth_normals: cli.smooth_normals,
-        quantize_geometry: true,
-        meshopt_compression: true,
+        quantize_geometry: cli.quantize_geometry,
+        meshopt_compression: cli.meshopt_compression,
     }
 }
 

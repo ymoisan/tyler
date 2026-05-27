@@ -70,8 +70,8 @@ impl Default for ExportOptions {
             clip_bbox: None,
             clip_geographic_region: None,
             smooth_normals: false,
-            quantize_geometry: true,
-            meshopt_compression: true,
+            quantize_geometry: false,
+            meshopt_compression: false,
         }
     }
 }
