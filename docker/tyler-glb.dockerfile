@@ -1,62 +1,63 @@
-# Builder-only Dockerfile for producing a static tyler-glb binary (musl).
+# Builder Dockerfile for the legacy fork binary `tyler-glb`
+# (v0.3.14-based, branch `3dtiles` of github.com/ymoisan/tyler).
 #
-# Cross-compiles from Debian to x86_64-unknown-linux-musl using clang.
-# NOTE: This Dockerfile has known issues with glibc/musl C++ header conflicts.
-# Prefer tyler-static.dockerfile (Alpine native) for reliable builds.
+# Self-contained: clones the fork inside the build.
+#
+# Uses Debian (glibc) because the fork's vendored proj-sys 0.23.1 always
+# runs bindgen, which requires dynamic libclang — incompatible with Alpine
+# musl static rust. The resulting `tyler-glb` is glibc-dynamic (not static).
+# For a fully static binary, use tyler-041 (proj-sys 0.27 with
+# PROJ_SYS_SKIP_BINDGEN).
+#
+# Patches vendored PROJ 9.1.0 for GCC 13+ compatibility (missing <cstdint>).
 #
 # Usage:
-#   docker build --output type=local,dest=. -f docker/tyler-glb.dockerfile .
-#   # Or to use corporate CA certs:
-#   # Place .crt/.pem files in certs/ directory, then build.
+#   docker build --no-cache --output type=local,dest=. -f docker/tyler-glb.dockerfile .
 
 FROM rust:1.88-bookworm AS builder
 
-# ── 1. System packages ──
+COPY certs/ /usr/local/share/ca-certificates/
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake clang libclang-dev lld g++ ca-certificates \
-    musl-tools musl-dev \
-    proj-data sqlite3 \
+    ca-certificates \
+    git \
+    cmake \
+    clang \
+    libclang-dev \
+    g++ \
+    pkg-config \
+    libsqlite3-dev \
+    sqlite3 \
+    proj-data \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 2. Corporate CA certificates (optional) ──
-# Place .crt/.pem files in certs/ at the repo root. If empty, this is a no-op.
-COPY certs/ /usr/local/share/ca-certificates/
-RUN update-ca-certificates
-ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV PROJ_DB_PATH=/usr/share/proj/proj.db \
+    CMAKE_POLICY_VERSION_MINIMUM=3.5
 
-# ── 3. Rust musl target ──
-RUN rustup target add x86_64-unknown-linux-musl
-
-# ── 4. Musl cross-compilation environment ──
-ENV TARGET=x86_64-unknown-linux-musl \
-    CC_x86_64_unknown_linux_musl=clang \
-    CXX_x86_64_unknown_linux_musl=clang++ \
-    AR_x86_64_unknown_linux_musl=ar \
-    CFLAGS_x86_64_unknown_linux_musl="--target=x86_64-unknown-linux-musl -I/usr/include/x86_64-linux-musl" \
-    CXXFLAGS_x86_64_unknown_linux_musl="--target=x86_64-unknown-linux-musl -I/usr/include/x86_64-linux-musl" \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=clang \
-    RUSTFLAGS="-C linker=clang -C link-arg=--target=x86_64-unknown-linux-musl -C link-arg=-fuse-ld=lld" \
-    PROJ_SYS_SKIP_BINDGEN=1 \
-    PROJ_DB_PATH=/usr/share/proj/proj.db
+WORKDIR /usr/src
+ARG FORK_REPO=https://github.com/ymoisan/tyler.git
+ARG FORK_BRANCH=3dtiles
+ARG PROJ_SUBMODULE_REPO=https://github.com/balazsdukai/proj.git
+ARG PROJ_SUBMODULE_BRANCH=main
+RUN git clone --depth 1 --branch ${FORK_BRANCH} ${FORK_REPO} tyler && \
+    rm -rf tyler/proj && \
+    git clone --depth 1 --branch ${PROJ_SUBMODULE_BRANCH} \
+        ${PROJ_SUBMODULE_REPO} tyler/proj
 
 WORKDIR /usr/src/tyler
 
-# Copy source
-COPY Cargo.toml Cargo.lock build.rs ./
-COPY resources ./resources
-COPY src ./src
-COPY proj ./proj
+# Patch vendored PROJ 9.1.0 for GCC 13+: add missing <cstdint>.
+RUN cd proj/proj-sys/PROJSRC && \
+    tar xzf proj-9.1.0.tar.gz && \
+    find proj-9.1.0/src \( -name '*.hpp' -o -name '*.cpp' \) \
+        -exec sed -i '1i #include <cstdint>' {} + && \
+    tar czf proj-9.1.0.tar.gz proj-9.1.0 && \
+    rm -rf proj-9.1.0
 
-# ── 5. Build ──
-RUN --mount=type=cache,target=/usr/src/tyler/target-docker \
-    CARGO_TARGET_DIR=/usr/src/tyler/target-docker \
-    cargo build --release --target x86_64-unknown-linux-musl \
-    && cp /usr/src/tyler/target-docker/x86_64-unknown-linux-musl/release/tyler-glb \
-          /usr/local/bin/tyler-glb
+RUN cargo build --release && \
+    cp target/release/tyler-glb /usr/local/bin/tyler-glb
 
-# Verify static linking
 RUN file /usr/local/bin/tyler-glb && ldd /usr/local/bin/tyler-glb 2>&1 || true
 
-# ── Minimal final stage — just the binary ──
 FROM scratch
 COPY --from=builder /usr/local/bin/tyler-glb /tyler-glb

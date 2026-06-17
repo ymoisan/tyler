@@ -1,0 +1,15 @@
+[workspace]
+name = "tyler-tools"
+description = "Python helpers around Tyler 0.4.1 (e.g., trees2cityjsonseq.py)"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = ">=3.11,<3.13"
+geopandas = "*"
+pyogrio = "*"
+shapely = "*"
+numpy = "*"
+scipy = "*"
+trimesh = "*"
+fast-simplification = "*"

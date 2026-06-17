@@ -7,7 +7,7 @@
 # package).
 #
 # Usage:
-#   docker build --no-cache --output type=local,dest=. -f docker/tyler-static.dockerfile .
+#   docker build --no-cache --output type=local,dest=. -f docker/tyler-041.dockerfile .
 #
 # This writes ./tyler-041 directly to the current directory.
 
