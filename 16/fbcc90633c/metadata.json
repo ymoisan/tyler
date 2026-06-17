@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.7.6",
+  "checkpoint_id": "16fbcc90633c",
+  "strategy": "manual-commit",
+  "branch": "3dtiles-v0.4.1",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "docker/tyler-041.dockerfile",
+    "docker/tyler-glb.dockerfile",
+    "docker/tyler-static.dockerfile",
+    "pixi.lock",
+    "pixi.toml",
+    "trees2cityjsonseq.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/16/fbcc90633c/0/metadata.json",
+      "transcript": "/16/fbcc90633c/0/full.jsonl",
+      "content_hash": "/16/fbcc90633c/0/content_hash.txt",
+      "prompt": "/16/fbcc90633c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 134,
+    "cache_creation_tokens": 1053128,
+    "cache_read_tokens": 8199201,
+    "output_tokens": 47329,
+    "api_call_count": 100
+  }
+}

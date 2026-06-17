@@ -1,0 +1,98 @@
+{
+  "cli_version": "0.7.6",
+  "checkpoint_id": "16fbcc90633c",
+  "session_id": "a97f81a4-5c89-4cc1-9c87-65a5aeb7bf63",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-17T20:40:57.114776813Z",
+  "branch": "3dtiles-v0.4.1",
+  "checkpoints_count": 6,
+  "save_step_count": 6,
+  "files_touched": [
+    "docker/tyler-041.dockerfile",
+    "docker/tyler-glb.dockerfile",
+    "docker/tyler-static.dockerfile",
+    "pixi.lock",
+    "pixi.toml",
+    "trees2cityjsonseq.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "f96e905a06c2",
+  "token_usage": {
+    "input_tokens": 134,
+    "cache_creation_tokens": 1053128,
+    "cache_read_tokens": 8199201,
+    "output_tokens": 47329,
+    "api_call_count": 100
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-17T20:40:56.757804167Z",
+    "agent_lines": 2311,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 97,
+    "total_committed": 2311,
+    "total_lines_changed": 2408,
+    "agent_percentage": 95.9717607973422,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 268,
+      "user_lines_removed": 97,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/agents/entire-search.md": 25,
+        ".claude/settings.json": 84,
+        ".github/hooks/entire.json": 61,
+        "docker/tyler-041.dockerfile": 54,
+        "docker/tyler-glb.dockerfile": 44
+      },
+      "user_removed_per_file": {
+        "docker/tyler-glb.dockerfile": 43,
+        "docker/tyler-static.dockerfile": 54
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 519,
+      "agent_lines_removed": 97
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 519,
+      "agent_lines_removed": 97
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 521,
+      "agent_lines_removed": 97
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2667,
+      "agent_lines_removed": 97
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2675,
+      "agent_lines_removed": 97
+    }
+  ]
+}

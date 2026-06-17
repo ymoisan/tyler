@@ -1,0 +1,73 @@
+Create a Python script to transfer trees to CityJSON SolitaryVegetationObject items
+
+`tyler-glb` (/mnt/d/github/tyler/tyler-glb, a Rust executable) currently ingests trees as geoparquet.  In order to have Tyler 0.4.1 (/mnt/d/github/tyler/tyler-041, a Rust executable I believe) include trees in the final 3DTiles output, we'll need to transform trees from parquet to [SolitaryVegetationObject](https://www.cityjson.org/specs/2.0.2/#solitaryvegetationobject) items in a jsonl file.
+
+The current process involves using an obj template representing a tree and instanciate that template at locations specified in a geopackage file that contains 2D tree crowns polygons (as detected by a previous process).  For each polygon centroid, the template is instanciated and scaled according to the attribute values that are relevant e.g. tree_height, crown_area etc. and the output is a parquet file with 3D tree objects of varying sizes.  Here is a set of such artifacts : 
+- /mnt/d/trees/low_poly_tree_f58.obj (or low_poly_tree_f58.gpkg) as template
+- /mnt/d/trees/Halifax_aoi_TreeCrowns_final.gpkg as tree crown polygons
+- /mnt/d/trees/CG11329_2018_PointCloud_CGVD2013_low_poly_tree_f58_3D.parquet as output
+
+I need a plan to turn this kind of parquet file to a jsonl file.  Tell me which of the obj or gpkg is best suited for the template.  If you can go directly to jsonl without going through the parquet file (and then go to jsonl), all the better.  Whichever way, I'll need a Python script that I can call.
+
+---
+
+> Run end-to-end with tyler-041
+Please do it /mnt/d/github/tyler/tyler-041 will need the input directory in which both the *-trees.jsonl and *.city.jsonl files should be.  So create a test dir where to run the jsonl python script on the Halifax data to get the *-trees.jsonl file and use maybe a ln -s to /mnt/d/tyler/retro2025/Halifax_aoi.city.jsonl
+
+---
+
+yes
+
+---
+
+Run tyler-041 with all options other than "pyramid", since you ran it already, and store results in separate outpût directories
+
+---
+
+Do that in a pixi env please
+
+---
+
+Add a help to the script with top posting the necessary Python packages for the user to see
+
+---
+
+$ pixi shell
+
+(tyler-tools) yvm001@w-she-AIT200061:/mnt/d/github/tyler$ ./trees2cityjsonseq.py --help
+./trees2cityjsonseq.py: line 27: 
+Convert an OBJ tree template + a tree-crowns GeoPackage into a CityJSONSeq
+file of SolitaryVegetationObject features, ready to feed Tyler 0.4.1
+alongside a buildings CityJSONSeq.
+
+REQUIRED PYTHON PACKAGES
+    Always:                    geopandas, pyogrio (or fiona), shapely
+    --simplify hull only:      numpy, scipy
+    --simplify ratio:<f> only: numpy, trimesh, fast-simplification
+
+    Recommended: use the bundled pixi env at /mnt/d/github/tyler/pixi.toml:
+        pixi run python /mnt/d/github/tyler/trees2cityjsonseq.py ...
+
+Usage:
+    python3 trees2cityjsonseq.py         --template /path/to/tree_template.obj         --crowns   /path/to/tree_crowns.gpkg         [--out     /path/to/output.jsonl]         [--simplify {none,pyramid,hull,ratio:<f>}]
+
+Default --out is <crowns-stem>-trees.city.jsonl next to the crowns file.
+The .city.jsonl suffix is required so cjindex picks the file up under tyler-041's
+NDJSON layout.
+
+Required crowns columns:
+    treeID, centroid_x, centroid_y, ground_z, tree_height, crown_area
+: File name too long
+./trees2cityjsonseq.py: line 29: from: command not found
+./trees2cityjsonseq.py: line 31: import: command not found
+./trees2cityjsonseq.py: line 32: import: command not found
+./trees2cityjsonseq.py: line 33: import: command not found
+./trees2cityjsonseq.py: line 34: import: command not found
+./trees2cityjsonseq.py: line 35: from: command not found
+./trees2cityjsonseq.py: line 36: from: command not found
+./trees2cityjsonseq.py: line 38: import: command not found
+./trees2cityjsonseq.py: line 40: Vec3: command not found
+./trees2cityjsonseq.py: line 43: syntax error near unexpected token `('
+./trees2cityjsonseq.py: line 43: `def parse_obj(path: Path) -> Tuple[List[Vec3], List[List[int]]]:'
+
+Using the wrong pixi env ?
